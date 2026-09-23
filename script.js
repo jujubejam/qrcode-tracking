@@ -1,5 +1,4 @@
 const video = document.getElementById('webcam');
-const cameraSelect = document.getElementById('cameraSelect');
 const stage = document.getElementById('stage');
 const stageCtx = stage.getContext('2d');
 const statusEl = document.getElementById('status');
@@ -9,9 +8,29 @@ portalImage.src = 'portal.png';
 
 let sampleCanvas;
 let sampleCtx;
-let currentStream;
 let tickLoopStarted = false;
 let latestDetections = [];
+
+// A code missing from one frame's scan (motion blur, a brief bad decode,
+// etc.) shouldn't make its portal flicker off. Each detected code's last
+// known location is kept for a short grace period after it stops being
+// seen, and only dropped once that expires.
+const TOKEN_PERSISTENCE_MS = 300;
+const trackedTokens = new Map();
+
+function updateTrackedTokens(detections) {
+  const now = performance.now();
+
+  for (const detection of detections) {
+    trackedTokens.set(detection.data, { location: detection.location, lastSeen: now });
+  }
+
+  for (const [data, token] of trackedTokens) {
+    if (now - token.lastSeen > TOKEN_PERSISTENCE_MS) {
+      trackedTokens.delete(data);
+    }
+  }
+}
 
 // Maps a point in the camera's pixel space onto the screen's pixel space, so
 // a code's position as seen from above corresponds to where it physically
@@ -42,47 +61,13 @@ for (const marker of CORNER_MARKERS) {
   marker.element.innerHTML = arDictionary.generateSVG(marker.id);
 }
 
-function videoConstraints(deviceId) {
-  return {
-    video: {
-      width: { ideal: 1920 },
-      height: { ideal: 1080 },
-      ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
-    },
-    audio: false,
-  };
-}
-
-async function startStream(deviceId) {
-  if (currentStream) {
-    currentStream.getTracks().forEach((track) => track.stop());
-  }
-
-  currentStream = await navigator.mediaDevices.getUserMedia(videoConstraints(deviceId));
-  video.srcObject = currentStream;
-}
-
-async function populateCameraOptions() {
-  const devices = await navigator.mediaDevices.enumerateDevices();
-  const cameras = devices.filter((device) => device.kind === 'videoinput');
-
-  cameraSelect.innerHTML = '';
-  for (const camera of cameras) {
-    const option = document.createElement('option');
-    option.value = camera.deviceId;
-    option.textContent = camera.label || `Camera ${cameraSelect.length + 1}`;
-    cameraSelect.appendChild(option);
-  }
-
-  cameraSelect.value = currentStream.getVideoTracks()[0]?.getSettings().deviceId;
-}
-
-cameraSelect.addEventListener('change', () => {
-  startStream(cameraSelect.value);
-});
-
-startStream()
-  .then(populateCameraOptions)
+navigator.mediaDevices.getUserMedia({
+  video: { width: { ideal: 1920 }, height: { ideal: 1080 } },
+  audio: false,
+})
+  .then((stream) => {
+    video.srcObject = stream;
+  })
   .catch((error) => {
     console.error('Unable to access camera:', error);
   });
@@ -125,6 +110,7 @@ function tick() {
 
     updateHomography(frame);
     latestDetections = scanForQRCodes();
+    updateTrackedTokens(latestDetections);
     renderStage();
   }
 
@@ -183,20 +169,29 @@ function renderStage() {
     return;
   }
 
-  for (const qrCode of latestDetections) {
-    const { topLeftCorner, topRightCorner } = qrCode.location;
-    const center = applyHomography(homography, centerOf(qrCode.location));
+  for (const { location } of trackedTokens.values()) {
+    const { topLeftCorner, topRightCorner, bottomLeftCorner } = location;
+    const center = applyHomography(homography, centerOf(location));
     const topLeft = applyHomography(homography, topLeftCorner);
     const topRight = applyHomography(homography, topRightCorner);
+    const bottomLeft = applyHomography(homography, bottomLeftCorner);
 
     const radius = Math.hypot(topLeft.x - center.x, topLeft.y - center.y) * 1.3 * 2;
 
-    // Half a code-width above the code's own top edge, so the portal floats
-    // above it rather than sitting directly on top of it.
+    // "Up" in the code's own orientation (from its bottom edge toward its
+    // top edge) rather than screen-space up, so the offset stays centered
+    // over the code even when it's rotated rather than drifting sideways.
     const codeWidth = Math.hypot(topRight.x - topLeft.x, topRight.y - topLeft.y);
+    const codeHeight = Math.hypot(topLeft.x - bottomLeft.x, topLeft.y - bottomLeft.y);
+    const upX = (topLeft.x - bottomLeft.x) / codeHeight;
+    const upY = (topLeft.y - bottomLeft.y) / codeHeight;
+
+    const topEdgeMidX = (topLeft.x + topRight.x) / 2;
+    const topEdgeMidY = (topLeft.y + topRight.y) / 2;
+    const offset = codeWidth * 0.5;
     const portalCenter = {
-      x: (topLeft.x + topRight.x) / 2,
-      y: (topLeft.y + topRight.y) / 2 - codeWidth * 0.5,
+      x: topEdgeMidX + upX * offset,
+      y: topEdgeMidY + upY * offset,
     };
 
     drawPortal(portalCenter, radius);

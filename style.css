@@ -18,19 +18,7 @@ html, body {
 }
 
 /* Positioned below the top corner markers (not next to them) so the two
-   don't overlap and the markers don't intercept clicks meant for these. */
-#cameraSelect {
-  position: absolute;
-  top: 168px;
-  left: 16px;
-  z-index: 2;
-  font: 14px monospace;
-  background: rgba(0, 0, 0, 0.6);
-  color: #00ff00;
-  border: 1px solid #00ff00;
-  padding: 4px 8px;
-}
-
+   don't overlap. */
 #status {
   position: absolute;
   top: 168px;
