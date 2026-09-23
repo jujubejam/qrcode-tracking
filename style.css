@@ -17,10 +17,12 @@ html, body {
   display: block;
 }
 
+/* Positioned below the top corner markers (not next to them) so the two
+   don't overlap and the markers don't intercept clicks meant for these. */
 #cameraSelect {
   position: absolute;
-  top: 12px;
-  left: 12px;
+  top: 116px;
+  left: 16px;
   z-index: 2;
   font: 14px monospace;
   background: rgba(0, 0, 0, 0.6);
@@ -31,7 +33,7 @@ html, body {
 
 #status {
   position: absolute;
-  top: 16px;
+  top: 116px;
   right: 16px;
   z-index: 2;
   margin: 0;

@@ -130,15 +130,18 @@ function updateHomography() {
 
   for (const marker of CORNER_MARKERS) {
     const detection = latestDetections.find((d) => d.data === marker.data);
-    if (!detection) {
-      statusEl.textContent = homography ? 'Tracking (last calibration)' : 'Calibrating…';
-      return;
+    if (detection) {
+      correspondences.push({
+        camera: centerOf(detection.location),
+        screen: elementCenter(marker.element),
+      });
     }
+  }
 
-    correspondences.push({
-      camera: centerOf(detection.location),
-      screen: elementCenter(marker.element),
-    });
+  if (correspondences.length < CORNER_MARKERS.length) {
+    const seen = `${correspondences.length}/${CORNER_MARKERS.length} corners seen`;
+    statusEl.textContent = homography ? `Tracking (last calibration, ${seen})` : `Calibrating… (${seen})`;
+    return;
   }
 
   homography = computeHomography(correspondences);
