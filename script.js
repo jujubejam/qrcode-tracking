@@ -1,17 +1,69 @@
 const video = document.getElementById('webcam');
 const overlay = document.getElementById('overlay');
 const overlayCtx = overlay.getContext('2d');
+const cameraSelect = document.getElementById('cameraSelect');
 
 let sampleCanvas;
 let sampleCtx;
+let currentStream;
+let tickLoopStarted = false;
 
-const VIDEO_CONSTRAINTS = {
-  video: {
-    width: { ideal: 1920 },
-    height: { ideal: 1080 },
-  },
-  audio: false,
-};
+// A camera whose label matches this is preselected on first load, so an
+// iPhone connected as a Continuity Camera is used instead of the built-in
+// webcam without requiring a manual selection.
+const PREFERRED_CAMERA_LABEL = /iphone|continuity/i;
+
+function videoConstraints(deviceId) {
+  return {
+    video: {
+      width: { ideal: 1920 },
+      height: { ideal: 1080 },
+      ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
+    },
+    audio: false,
+  };
+}
+
+async function startStream(deviceId) {
+  if (currentStream) {
+    currentStream.getTracks().forEach((track) => track.stop());
+  }
+
+  currentStream = await navigator.mediaDevices.getUserMedia(videoConstraints(deviceId));
+  video.srcObject = currentStream;
+}
+
+async function populateCameraOptions() {
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  const cameras = devices.filter((device) => device.kind === 'videoinput');
+
+  cameraSelect.innerHTML = '';
+  for (const camera of cameras) {
+    const option = document.createElement('option');
+    option.value = camera.deviceId;
+    option.textContent = camera.label || `Camera ${cameraSelect.length + 1}`;
+    cameraSelect.appendChild(option);
+  }
+
+  const activeDeviceId = currentStream.getVideoTracks()[0]?.getSettings().deviceId;
+  const preferred = cameras.find((camera) => PREFERRED_CAMERA_LABEL.test(camera.label));
+  const desiredDeviceId = preferred?.deviceId ?? activeDeviceId;
+
+  cameraSelect.value = desiredDeviceId;
+  if (preferred && preferred.deviceId !== activeDeviceId) {
+    await startStream(preferred.deviceId);
+  }
+}
+
+cameraSelect.addEventListener('change', () => {
+  startStream(cameraSelect.value);
+});
+
+startStream()
+  .then(populateCameraOptions)
+  .catch((error) => {
+    console.error('Unable to access camera:', error);
+  });
 
 // Approximate size of a QR code in the captured frame, in pixels.
 const QR_SIZE = 150;
@@ -24,14 +76,6 @@ const QR_SIZE = 150;
 const TILE_SIZE = QR_SIZE * 2;
 const TILE_STEP = QR_SIZE;
 
-navigator.mediaDevices.getUserMedia(VIDEO_CONSTRAINTS)
-  .then((stream) => {
-    video.srcObject = stream;
-  })
-  .catch((error) => {
-    console.error('Unable to access webcam:', error);
-  });
-
 video.addEventListener('loadedmetadata', () => {
   overlay.width = video.videoWidth;
   overlay.height = video.videoHeight;
@@ -41,7 +85,10 @@ video.addEventListener('loadedmetadata', () => {
   sampleCanvas.height = video.videoHeight;
   sampleCtx = sampleCanvas.getContext('2d', { willReadFrequently: true });
 
-  requestAnimationFrame(tick);
+  if (!tickLoopStarted) {
+    tickLoopStarted = true;
+    requestAnimationFrame(tick);
+  }
 });
 
 function tick() {
