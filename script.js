@@ -138,6 +138,8 @@ function updateHomography(frame) {
 
   for (const marker of CORNER_MARKERS) {
     const detected = arMarkers.find((m) => m.id === marker.id);
+    marker.element.classList.toggle('detected', !!detected);
+
     if (detected) {
       correspondences.push({
         camera: averageOf(detected.corners),

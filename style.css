@@ -54,14 +54,22 @@ html, body {
   background: #000;
 }
 
-/* Fixed-position QR codes the camera uses to continuously (re)compute the
-   camera-to-screen homography, so the display stays correctly calibrated
-   even if the camera or screen moves. */
+/* Fixed-position ArUco markers the camera uses to continuously (re)compute
+   the camera-to-screen homography, so the display stays correctly
+   calibrated even if the camera or screen moves. */
 .corner-marker {
   position: absolute;
   z-index: 2;
   width: 90px;
   height: 90px;
+  outline: 4px solid transparent;
+  box-shadow: 0 0 0 transparent;
+  transition: outline-color 0.1s, box-shadow 0.1s;
+}
+
+.corner-marker.detected {
+  outline-color: #00ff88;
+  box-shadow: 0 0 16px #00ff88;
 }
 
 .corner-marker svg {
