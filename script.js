@@ -4,6 +4,9 @@ const stage = document.getElementById('stage');
 const stageCtx = stage.getContext('2d');
 const statusEl = document.getElementById('status');
 
+const portalImage = new Image();
+portalImage.src = 'portal.png';
+
 let sampleCanvas;
 let sampleCtx;
 let currentStream;
@@ -185,22 +188,19 @@ function renderStage() {
     const corner = applyHomography(homography, qrCode.location.topLeftCorner);
     const radius = Math.hypot(corner.x - center.x, corner.y - center.y) * 1.3;
 
-    drawHalo(center, radius);
+    drawPortal(center, radius);
   }
 }
 
-// A soft radial glow, sized bigger than the code itself so it shows through
-// around its edges, rather than a hard-edged shape.
-function drawHalo(center, radius) {
-  const gradient = stageCtx.createRadialGradient(center.x, center.y, 0, center.x, center.y, radius);
-  gradient.addColorStop(0, 'rgba(255, 238, 0, 0.85)');
-  gradient.addColorStop(0.7, 'rgba(255, 238, 0, 0.35)');
-  gradient.addColorStop(1, 'rgba(255, 238, 0, 0)');
+// Sized bigger than the code itself so it shows through around its edges,
+// rather than a hard-edged shape.
+function drawPortal(center, radius) {
+  if (!portalImage.complete) {
+    return;
+  }
 
-  stageCtx.fillStyle = gradient;
-  stageCtx.beginPath();
-  stageCtx.arc(center.x, center.y, radius, 0, Math.PI * 2);
-  stageCtx.fill();
+  const size = radius * 2;
+  stageCtx.drawImage(portalImage, center.x - radius, center.y - radius, size, size);
 }
 
 // Solves for a homography (a 3x3 projective transform, with h33 fixed to 1)
