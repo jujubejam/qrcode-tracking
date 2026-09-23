@@ -21,7 +21,7 @@ html, body {
    don't overlap and the markers don't intercept clicks meant for these. */
 #cameraSelect {
   position: absolute;
-  top: 116px;
+  top: 168px;
   left: 16px;
   z-index: 2;
   font: 14px monospace;
@@ -33,7 +33,7 @@ html, body {
 
 #status {
   position: absolute;
-  top: 116px;
+  top: 168px;
   right: 16px;
   z-index: 2;
   margin: 0;
@@ -60,8 +60,8 @@ html, body {
 .corner-marker {
   position: absolute;
   z-index: 2;
-  width: 90px;
-  height: 90px;
+  width: 140px;
+  height: 140px;
   outline: 4px solid transparent;
   box-shadow: 0 0 0 transparent;
   transition: outline-color 0.1s, box-shadow 0.1s;

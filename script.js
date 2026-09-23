@@ -137,7 +137,12 @@ function updateHomography(frame) {
   const correspondences = [];
 
   for (const marker of CORNER_MARKERS) {
-    const detected = arMarkers.find((m) => m.id === marker.id);
+    // hammingDistance is 0 only for an exact bit-for-bit match. A nonzero
+    // distance means the read was corrupted (e.g. by glare) and the library
+    // guessed the closest known code — which can be flat-out wrong, so
+    // those are treated the same as not seeing the marker at all rather than
+    // risking a bad point in the homography.
+    const detected = arMarkers.find((m) => m.id === marker.id && m.hammingDistance === 0);
     marker.element.classList.toggle('detected', !!detected);
 
     if (detected) {
