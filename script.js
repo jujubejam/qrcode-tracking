@@ -8,11 +8,6 @@ let sampleCtx;
 let currentStream;
 let tickLoopStarted = false;
 
-// A camera whose label matches this is preselected on first load, so an
-// iPhone connected as a Continuity Camera is used instead of the built-in
-// webcam without requiring a manual selection.
-const PREFERRED_CAMERA_LABEL = /iphone|continuity/i;
-
 function videoConstraints(deviceId) {
   return {
     video: {
@@ -45,14 +40,7 @@ async function populateCameraOptions() {
     cameraSelect.appendChild(option);
   }
 
-  const activeDeviceId = currentStream.getVideoTracks()[0]?.getSettings().deviceId;
-  const preferred = cameras.find((camera) => PREFERRED_CAMERA_LABEL.test(camera.label));
-  const desiredDeviceId = preferred?.deviceId ?? activeDeviceId;
-
-  cameraSelect.value = desiredDeviceId;
-  if (preferred && preferred.deviceId !== activeDeviceId) {
-    await startStream(preferred.deviceId);
-  }
+  cameraSelect.value = currentStream.getVideoTracks()[0]?.getSettings().deviceId;
 }
 
 cameraSelect.addEventListener('change', () => {
