@@ -2,6 +2,7 @@ const video = document.getElementById('webcam');
 const stage = document.getElementById('stage');
 const stageCtx = stage.getContext('2d');
 const statusEl = document.getElementById('status');
+const detectedCodesEl = document.getElementById('detectedCodes');
 
 function loadImage(src) {
   const image = new Image();
@@ -21,18 +22,26 @@ let sampleCtx;
 let tickLoopStarted = false;
 let latestDetections = [];
 
+// jsQR data is matched exactly, so incidental whitespace or casing from
+// however a code was generated (e.g. "Phone " vs "phone") would otherwise
+// silently fail to match anything in PORTAL_IMAGES_BY_DATA.
+function normalizeData(data) {
+  return (data || '').trim().toLowerCase();
+}
+
 // A code missing from one frame's scan (motion blur, a brief bad decode,
 // etc.) shouldn't make its portal flicker off. Each detected code's last
-// known location is kept for a short grace period after it stops being
-// seen, and only dropped once that expires.
-const TOKEN_PERSISTENCE_MS = 300;
+// known location is kept for a grace period after it stops being seen, and
+// only dropped once that expires.
+const TOKEN_PERSISTENCE_MS = 800;
 const trackedTokens = new Map();
 
 function updateTrackedTokens(detections) {
   const now = performance.now();
 
   for (const detection of detections) {
-    trackedTokens.set(detection.data, { data: detection.data, location: detection.location, lastSeen: now });
+    const data = normalizeData(detection.data);
+    trackedTokens.set(data, { data, location: detection.location, lastSeen: now });
   }
 
   for (const [data, token] of trackedTokens) {
@@ -40,6 +49,10 @@ function updateTrackedTokens(detections) {
       trackedTokens.delete(data);
     }
   }
+
+  detectedCodesEl.textContent = trackedTokens.size
+    ? `Seen: ${[...trackedTokens.keys()].map((data) => `"${data}"`).join(', ')}`
+    : '';
 }
 
 // Maps a point in the camera's pixel space onto the screen's pixel space, so
