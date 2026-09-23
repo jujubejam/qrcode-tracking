@@ -51,7 +51,7 @@ html, body {
   width: 100vw;
   height: 100vh;
   z-index: 1;
-  background: #000;
+  background: #000 url('worldmap.jpg') center / cover no-repeat;
 }
 
 /* Fixed-position ArUco markers the camera uses to continuously (re)compute
