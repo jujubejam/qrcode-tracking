@@ -3,8 +3,18 @@ const stage = document.getElementById('stage');
 const stageCtx = stage.getContext('2d');
 const statusEl = document.getElementById('status');
 
-const portalImage = new Image();
-portalImage.src = 'portal.png';
+function loadImage(src) {
+  const image = new Image();
+  image.src = src;
+  return image;
+}
+
+// Only these specific physical tokens get a portal; any other code is
+// tracked (for calibration/detection purposes) but shows nothing.
+const PORTAL_IMAGES_BY_DATA = {
+  phone: loadImage('portal_cool.png'),
+  'object-a': loadImage('portal_warm.png'),
+};
 
 let sampleCanvas;
 let sampleCtx;
@@ -22,7 +32,7 @@ function updateTrackedTokens(detections) {
   const now = performance.now();
 
   for (const detection of detections) {
-    trackedTokens.set(detection.data, { location: detection.location, lastSeen: now });
+    trackedTokens.set(detection.data, { data: detection.data, location: detection.location, lastSeen: now });
   }
 
   for (const [data, token] of trackedTokens) {
@@ -169,7 +179,12 @@ function renderStage() {
     return;
   }
 
-  for (const { location } of trackedTokens.values()) {
+  for (const { data, location } of trackedTokens.values()) {
+    const portalImage = PORTAL_IMAGES_BY_DATA[data];
+    if (!portalImage) {
+      continue;
+    }
+
     const { topLeftCorner, topRightCorner, bottomLeftCorner } = location;
     const center = applyHomography(homography, centerOf(location));
     const topLeft = applyHomography(homography, topLeftCorner);
@@ -194,19 +209,19 @@ function renderStage() {
       y: topEdgeMidY + upY * offset,
     };
 
-    drawPortal(portalCenter, radius);
+    drawPortal(portalImage, portalCenter, radius);
   }
 }
 
 // Sized bigger than the code itself so it shows through around its edges,
 // rather than a hard-edged shape.
-function drawPortal(center, radius) {
-  if (!portalImage.complete) {
+function drawPortal(image, center, radius) {
+  if (!image.complete) {
     return;
   }
 
   const size = radius * 2;
-  stageCtx.drawImage(portalImage, center.x - radius, center.y - radius, size, size);
+  stageCtx.drawImage(image, center.x - radius, center.y - radius, size, size);
 }
 
 // Solves for a homography (a 3x3 projective transform, with h33 fixed to 1)
