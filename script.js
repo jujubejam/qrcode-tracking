@@ -2,16 +2,25 @@ const video = document.getElementById('webcam');
 const overlay = document.getElementById('overlay');
 const overlayCtx = overlay.getContext('2d');
 
+const pairing = document.getElementById('pairing');
+const viewerPanel = document.getElementById('viewerPanel');
+const viewerCodeEl = document.getElementById('viewerCode');
+const viewerStatusEl = document.getElementById('viewerStatus');
+const becomeBroadcasterButton = document.getElementById('becomeBroadcasterButton');
+const broadcasterPanel = document.getElementById('broadcasterPanel');
+const codeInput = document.getElementById('codeInput');
+const connectButton = document.getElementById('connectButton');
+const broadcasterStatusEl = document.getElementById('broadcasterStatus');
+
 let sampleCanvas;
 let sampleCtx;
 
-const VIDEO_CONSTRAINTS = {
-  video: {
-    width: { ideal: 1920 },
-    height: { ideal: 1080 },
-  },
-  audio: false,
-};
+// The overhead camera is usually a phone rather than this device, connected
+// over WebRTC (see below). This device is a "viewer" (it receives that feed
+// and runs QR detection on it) unless the user opts to make it the "camera"
+// instead, in which case it streams its own camera to a viewer's code.
+let role = 'viewer';
+let peer;
 
 // Approximate size of a QR code in the captured frame, in pixels.
 const QR_SIZE = 150;
@@ -24,17 +33,81 @@ const QR_SIZE = 150;
 const TILE_SIZE = QR_SIZE * 2;
 const TILE_STEP = QR_SIZE;
 
-navigator.mediaDevices.getUserMedia(VIDEO_CONSTRAINTS)
-  .then((stream) => {
-    video.srcObject = stream;
-  })
-  .catch((error) => {
-    console.error('Unable to access webcam:', error);
+function randomViewerCode() {
+  return String(Math.floor(1000 + Math.random() * 9000));
+}
+
+function startViewer() {
+  const code = randomViewerCode();
+  viewerCodeEl.textContent = code;
+
+  peer = new Peer(code);
+  peer.on('call', (call) => {
+    call.answer();
+    call.on('stream', (remoteStream) => {
+      viewerStatusEl.textContent = 'Camera connected.';
+      pairing.hidden = true;
+      video.srcObject = remoteStream;
+    });
   });
+  peer.on('error', (error) => {
+    viewerStatusEl.textContent = `Connection error: ${error.type}`;
+  });
+}
+
+function connectAsBroadcaster(viewerCode) {
+  broadcasterStatusEl.textContent = 'Requesting camera…';
+
+  navigator.mediaDevices.getUserMedia({
+    video: { facingMode: { ideal: 'environment' } },
+    audio: false,
+  })
+    .then((stream) => {
+      video.srcObject = stream;
+      broadcasterStatusEl.textContent = 'Connecting…';
+
+      peer = new Peer();
+      peer.on('open', () => {
+        peer.call(viewerCode, stream);
+        broadcasterStatusEl.textContent = `Streaming to ${viewerCode}.`;
+        pairing.hidden = true;
+      });
+      peer.on('error', (error) => {
+        broadcasterStatusEl.textContent = `Connection error: ${error.type}`;
+      });
+    })
+    .catch((error) => {
+      broadcasterStatusEl.textContent = `Camera error: ${error.message}`;
+    });
+}
+
+becomeBroadcasterButton.addEventListener('click', () => {
+  role = 'broadcaster';
+  if (peer) {
+    peer.destroy();
+  }
+  viewerPanel.hidden = true;
+  broadcasterPanel.hidden = false;
+});
+
+connectButton.addEventListener('click', () => {
+  const viewerCode = codeInput.value.trim();
+  if (viewerCode) {
+    connectAsBroadcaster(viewerCode);
+  }
+});
+
+startViewer();
 
 video.addEventListener('loadedmetadata', () => {
   overlay.width = video.videoWidth;
   overlay.height = video.videoHeight;
+
+  // A broadcaster only sends its camera feed; it doesn't need to run QR
+  // detection on its own local preview.
+  if (role === 'broadcaster') {
+    return;
+  }
 
   sampleCanvas = document.createElement('canvas');
   sampleCanvas.width = video.videoWidth;

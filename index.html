@@ -9,7 +9,22 @@
 <body>
   <video id="webcam" autoplay playsinline muted></video>
   <canvas id="overlay"></canvas>
+
+  <div id="pairing">
+    <div id="viewerPanel">
+      <p>Viewer code: <strong id="viewerCode">&hellip;</strong></p>
+      <p id="viewerStatus">Waiting for a camera to connect&hellip;</p>
+      <button id="becomeBroadcasterButton" type="button">Use this device as the camera instead</button>
+    </div>
+    <div id="broadcasterPanel" hidden>
+      <label>Viewer code: <input id="codeInput" inputmode="numeric" maxlength="4"></label>
+      <button id="connectButton" type="button">Connect</button>
+      <p id="broadcasterStatus"></p>
+    </div>
+  </div>
+
   <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
   <script src="script.js"></script>
 </body>
 </html>

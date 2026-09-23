@@ -20,3 +20,27 @@ html, body {
 #overlay {
   pointer-events: none;
 }
+
+#pairing {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 1;
+  font: 16px monospace;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.75);
+  border: 1px solid #fff;
+  padding: 20px 24px;
+  text-align: center;
+}
+
+#pairing input {
+  font: inherit;
+  width: 4em;
+}
+
+#pairing button {
+  font: inherit;
+  margin-top: 8px;
+}
