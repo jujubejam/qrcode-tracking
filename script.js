@@ -184,11 +184,22 @@ function renderStage() {
   }
 
   for (const qrCode of latestDetections) {
+    const { topLeftCorner, topRightCorner } = qrCode.location;
     const center = applyHomography(homography, centerOf(qrCode.location));
-    const corner = applyHomography(homography, qrCode.location.topLeftCorner);
-    const radius = Math.hypot(corner.x - center.x, corner.y - center.y) * 1.3;
+    const topLeft = applyHomography(homography, topLeftCorner);
+    const topRight = applyHomography(homography, topRightCorner);
 
-    drawPortal(center, radius);
+    const radius = Math.hypot(topLeft.x - center.x, topLeft.y - center.y) * 1.3;
+
+    // One code-width above the code's own top edge, so the portal floats
+    // above it rather than sitting directly on top of it.
+    const codeWidth = Math.hypot(topRight.x - topLeft.x, topRight.y - topLeft.y);
+    const portalCenter = {
+      x: (topLeft.x + topRight.x) / 2,
+      y: (topLeft.y + topRight.y) / 2 - codeWidth,
+    };
+
+    drawPortal(portalCenter, radius);
   }
 }
 
