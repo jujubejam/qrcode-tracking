@@ -50,8 +50,7 @@ function tick() {
 
     overlayCtx.clearRect(0, 0, overlay.width, overlay.height);
     for (const qrCode of scanForQRCodes()) {
-      drawBox(qrCode.location);
-      drawLabel(qrCode.location, qrCode.data);
+      drawHalo(qrCode.location);
     }
   }
 
@@ -142,35 +141,21 @@ function centerOf(location) {
   };
 }
 
-function drawBox(location) {
-  const { topLeftCorner, topRightCorner, bottomRightCorner, bottomLeftCorner } = location;
+function drawHalo(location) {
+  const { topLeftCorner, bottomRightCorner } = location;
+  const center = centerOf(location);
+  const radius = Math.hypot(
+    bottomRightCorner.x - topLeftCorner.x,
+    bottomRightCorner.y - topLeftCorner.y,
+  ) / 2;
 
-  overlayCtx.strokeStyle = '#00ff00';
-  overlayCtx.lineWidth = Math.max(4, overlay.width * 0.006);
+  overlayCtx.save();
+  overlayCtx.shadowColor = '#ffee00';
+  overlayCtx.shadowBlur = radius * 0.6;
+  overlayCtx.strokeStyle = '#ffee00';
+  overlayCtx.lineWidth = Math.max(6, radius * 0.15);
   overlayCtx.beginPath();
-  overlayCtx.moveTo(topLeftCorner.x, topLeftCorner.y);
-  overlayCtx.lineTo(topRightCorner.x, topRightCorner.y);
-  overlayCtx.lineTo(bottomRightCorner.x, bottomRightCorner.y);
-  overlayCtx.lineTo(bottomLeftCorner.x, bottomLeftCorner.y);
-  overlayCtx.closePath();
+  overlayCtx.arc(center.x, center.y, radius, 0, Math.PI * 2);
   overlayCtx.stroke();
-}
-
-function drawLabel(location, text) {
-  const { bottomLeftCorner, bottomRightCorner } = location;
-
-  const fontSize = Math.max(16, overlay.width * 0.02);
-  const padding = fontSize * 0.25;
-  const x = Math.min(bottomLeftCorner.x, bottomRightCorner.x);
-  const y = Math.max(bottomLeftCorner.y, bottomRightCorner.y) + padding;
-
-  overlayCtx.font = `${fontSize}px monospace`;
-  overlayCtx.textBaseline = 'top';
-  const textWidth = overlayCtx.measureText(text).width;
-
-  overlayCtx.fillStyle = 'rgba(0, 0, 0, 0.6)';
-  overlayCtx.fillRect(x - padding, y - padding, textWidth + padding * 2, fontSize + padding * 2);
-
-  overlayCtx.fillStyle = '#00ff00';
-  overlayCtx.fillText(text, x, y);
+  overlayCtx.restore();
 }
