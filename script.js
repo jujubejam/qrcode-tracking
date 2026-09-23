@@ -34,7 +34,7 @@ function normalizeData(data) {
 // etc.) shouldn't make its portal flicker off. Each detected code's last
 // known location is kept for a grace period after it stops being seen, and
 // only dropped once that expires.
-const TOKEN_PERSISTENCE_MS = 800;
+const TOKEN_PERSISTENCE_MS = 400;
 const trackedTokens = new Map();
 
 function updateTrackedTokens(detections) {
@@ -143,13 +143,14 @@ resizeStage();
 // Approximate size of a QR code in the captured frame, in pixels.
 const QR_SIZE = 150;
 // jsQR only ever returns one decoded symbol per call, so to find multiple
-// codes in a frame we scan overlapping crop windows across the image and
-// decode each one separately. The window is bigger than a code (with room
-// for its quiet zone) and the step is small enough that the overlap between
-// adjacent windows is at least one code-width, so no code can fall entirely
-// across a window boundary and get missed.
+// codes in a frame we scan crop windows across the image and decode each
+// one separately. The window is bigger than a code (with room for its
+// quiet zone). Stepping by the full tile size (no overlap) means fewer
+// decode attempts per frame, so reacts faster, at the cost of occasionally
+// missing a code that lands right on a tile boundary until it (or the
+// camera) shifts slightly.
 const TILE_SIZE = QR_SIZE * 2;
-const TILE_STEP = QR_SIZE;
+const TILE_STEP = TILE_SIZE;
 
 video.addEventListener('loadedmetadata', () => {
   sampleCanvas = document.createElement('canvas');
