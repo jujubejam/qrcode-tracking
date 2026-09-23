@@ -15,22 +15,28 @@ let latestDetections = [];
 // sits on the display. Recomputed continuously; see updateHomography().
 let homography = null;
 
-// Fixed QR codes rendered at the four known screen corners. Detecting all
-// four in a frame gives four (camera position, screen position)
-// correspondences, enough to (re)solve the homography, so calibration stays
-// correct even if the camera or screen moves.
+// Fixed ArUco markers rendered at the four known screen corners. ArUco
+// markers are built for exactly this: tracking-camera detection at odd
+// angles, distances and lighting, which QR codes (tuned for someone holding
+// a phone up close) are much less reliable at, especially stuck in the
+// corner of a frame. Detecting all four in a frame gives four (camera
+// position, screen position) correspondences, enough to (re)solve the
+// homography, so calibration stays correct even if the camera or screen
+// moves. Physical tokens placed on the display are still tracked as QR
+// codes (see scanForQRCodes), since those benefit from carrying arbitrary
+// data rather than just a small fixed ID.
 const CORNER_MARKERS = [
-  { element: document.getElementById('cornerTL'), data: 'corner:tl' },
-  { element: document.getElementById('cornerTR'), data: 'corner:tr' },
-  { element: document.getElementById('cornerBR'), data: 'corner:br' },
-  { element: document.getElementById('cornerBL'), data: 'corner:bl' },
+  { element: document.getElementById('cornerTL'), id: 0 },
+  { element: document.getElementById('cornerTR'), id: 1 },
+  { element: document.getElementById('cornerBR'), id: 2 },
+  { element: document.getElementById('cornerBL'), id: 3 },
 ];
 
+const arDictionary = new AR.Dictionary('ARUCO_MIP_36h12');
+const arDetector = new AR.Detector();
+
 for (const marker of CORNER_MARKERS) {
-  const qr = qrcode(0, 'L');
-  qr.addData(marker.data);
-  qr.make();
-  marker.element.innerHTML = qr.createSvgTag(4, 0);
+  marker.element.innerHTML = arDictionary.generateSVG(marker.id);
 }
 
 function videoConstraints(deviceId) {
@@ -112,9 +118,10 @@ video.addEventListener('loadedmetadata', () => {
 function tick() {
   if (video.readyState === video.HAVE_ENOUGH_DATA) {
     sampleCtx.drawImage(video, 0, 0, sampleCanvas.width, sampleCanvas.height);
-    latestDetections = scanForQRCodes();
+    const frame = sampleCtx.getImageData(0, 0, sampleCanvas.width, sampleCanvas.height);
 
-    updateHomography();
+    updateHomography(frame);
+    latestDetections = scanForQRCodes();
     renderStage();
   }
 
@@ -125,14 +132,15 @@ function tick() {
 // found, (re)solves the homography from their known screen positions and
 // detected camera positions. If any are missing this frame (temporarily
 // occluded, out of view, etc.), the previous homography is kept as-is.
-function updateHomography() {
+function updateHomography(frame) {
+  const arMarkers = arDetector.detect(frame);
   const correspondences = [];
 
   for (const marker of CORNER_MARKERS) {
-    const detection = latestDetections.find((d) => d.data === marker.data);
-    if (detection) {
+    const detected = arMarkers.find((m) => m.id === marker.id);
+    if (detected) {
       correspondences.push({
-        camera: centerOf(detection.location),
+        camera: averageOf(detected.corners),
         screen: elementCenter(marker.element),
       });
     }
@@ -153,8 +161,9 @@ function elementCenter(element) {
   return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
 }
 
-function isCornerMarker(data) {
-  return CORNER_MARKERS.some((marker) => marker.data === data);
+function averageOf(points) {
+  const sum = points.reduce((acc, p) => ({ x: acc.x + p.x, y: acc.y + p.y }), { x: 0, y: 0 });
+  return { x: sum.x / points.length, y: sum.y / points.length };
 }
 
 function renderStage() {
@@ -165,10 +174,6 @@ function renderStage() {
   }
 
   for (const qrCode of latestDetections) {
-    if (isCornerMarker(qrCode.data)) {
-      continue;
-    }
-
     const center = applyHomography(homography, centerOf(qrCode.location));
     const corner = applyHomography(homography, qrCode.location.topLeftCorner);
     const radius = Math.hypot(corner.x - center.x, corner.y - center.y) * 1.3;
