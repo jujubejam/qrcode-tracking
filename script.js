@@ -1,4 +1,5 @@
 const video = document.getElementById('webcam');
+const cameraSelect = document.getElementById('cameraSelect');
 const stage = document.getElementById('stage');
 const stageCtx = stage.getContext('2d');
 const statusEl = document.getElementById('status');
@@ -84,13 +85,49 @@ for (const marker of CORNER_MARKERS) {
   marker.element.innerHTML = arDictionary.generateSVG(marker.id);
 }
 
-navigator.mediaDevices.getUserMedia({
-  video: { width: { ideal: 1920 }, height: { ideal: 1080 } },
-  audio: false,
-})
-  .then((stream) => {
-    video.srcObject = stream;
-  })
+function videoConstraints(deviceId) {
+  return {
+    video: {
+      width: { ideal: 1920 },
+      height: { ideal: 1080 },
+      ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
+    },
+    audio: false,
+  };
+}
+
+let currentStream;
+
+async function startStream(deviceId) {
+  if (currentStream) {
+    currentStream.getTracks().forEach((track) => track.stop());
+  }
+
+  currentStream = await navigator.mediaDevices.getUserMedia(videoConstraints(deviceId));
+  video.srcObject = currentStream;
+}
+
+async function populateCameraOptions() {
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  const cameras = devices.filter((device) => device.kind === 'videoinput');
+
+  cameraSelect.innerHTML = '';
+  for (const camera of cameras) {
+    const option = document.createElement('option');
+    option.value = camera.deviceId;
+    option.textContent = camera.label || `Camera ${cameraSelect.length + 1}`;
+    cameraSelect.appendChild(option);
+  }
+
+  cameraSelect.value = currentStream.getVideoTracks()[0]?.getSettings().deviceId;
+}
+
+cameraSelect.addEventListener('change', () => {
+  startStream(cameraSelect.value);
+});
+
+startStream()
+  .then(populateCameraOptions)
   .catch((error) => {
     console.error('Unable to access camera:', error);
   });

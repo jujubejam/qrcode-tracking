@@ -19,6 +19,18 @@ html, body {
 
 /* Positioned below the top corner markers (not next to them) so the two
    don't overlap. */
+#cameraSelect {
+  position: absolute;
+  top: 168px;
+  left: 16px;
+  z-index: 2;
+  font: 14px monospace;
+  background: #F5E2BA;
+  color: #000;
+  border: 2px solid #000;
+  padding: 4px 8px;
+}
+
 #status {
   position: absolute;
   top: 168px;
