@@ -2,11 +2,29 @@ const video = document.getElementById('webcam');
 const overlay = document.getElementById('overlay');
 const overlayCtx = overlay.getContext('2d');
 const cameraSelect = document.getElementById('cameraSelect');
+const stage = document.getElementById('stage');
+const stageCtx = stage.getContext('2d');
+const calibrateButton = document.getElementById('calibrateButton');
+const calibrationPanel = document.getElementById('calibration');
+const calibrationInstruction = document.getElementById('calibrationInstruction');
+const captureCalibrationPointButton = document.getElementById('captureCalibrationPoint');
 
 let sampleCanvas;
 let sampleCtx;
 let currentStream;
 let tickLoopStarted = false;
+let latestDetections = [];
+
+// Maps a point in the camera's pixel space onto the screen's pixel space, so
+// a code's position as seen from above corresponds to where it physically
+// sits on the display. Set once calibration finishes; see calibrate().
+let homography = null;
+let calibrating = false;
+let calibrationStep = 0;
+let calibrationPoints = [];
+
+const CALIBRATION_TARGET_LABELS = ['top-left', 'top-right', 'bottom-right', 'bottom-left'];
+const CALIBRATION_MARGIN = 60;
 
 function videoConstraints(deviceId) {
   return {
@@ -53,6 +71,65 @@ startStream()
     console.error('Unable to access camera:', error);
   });
 
+function resizeStage() {
+  stage.width = window.innerWidth;
+  stage.height = window.innerHeight;
+}
+
+window.addEventListener('resize', resizeStage);
+resizeStage();
+
+// The four corners of the screen, in screen pixel space, that the user is
+// asked to place a code on top of in turn during calibration.
+function calibrationTargets() {
+  return [
+    { x: CALIBRATION_MARGIN, y: CALIBRATION_MARGIN },
+    { x: stage.width - CALIBRATION_MARGIN, y: CALIBRATION_MARGIN },
+    { x: stage.width - CALIBRATION_MARGIN, y: stage.height - CALIBRATION_MARGIN },
+    { x: CALIBRATION_MARGIN, y: stage.height - CALIBRATION_MARGIN },
+  ];
+}
+
+function startCalibration() {
+  calibrating = true;
+  calibrationStep = 0;
+  calibrationPoints = [];
+  stage.classList.remove('opaque');
+  calibrationPanel.hidden = false;
+  showCalibrationStep();
+}
+
+function showCalibrationStep() {
+  const label = CALIBRATION_TARGET_LABELS[calibrationStep];
+  calibrationInstruction.textContent = `Place a QR code at the ${label} marker, then press Capture.`;
+}
+
+function captureCalibrationPoint() {
+  if (latestDetections.length === 0) {
+    calibrationInstruction.textContent = 'No QR code seen — place one on the marker and try again.';
+    return;
+  }
+
+  calibrationPoints.push({
+    camera: centerOf(latestDetections[0].location),
+    screen: calibrationTargets()[calibrationStep],
+  });
+
+  calibrationStep += 1;
+  if (calibrationStep < CALIBRATION_TARGET_LABELS.length) {
+    showCalibrationStep();
+    return;
+  }
+
+  homography = computeHomography(calibrationPoints);
+  calibrating = false;
+  calibrationPanel.hidden = true;
+  stage.classList.add('opaque');
+}
+
+calibrateButton.addEventListener('click', startCalibration);
+captureCalibrationPointButton.addEventListener('click', captureCalibrationPoint);
+
 // Approximate size of a QR code in the captured frame, in pixels.
 const QR_SIZE = 150;
 // jsQR only ever returns one decoded symbol per call, so to find multiple
@@ -82,15 +159,124 @@ video.addEventListener('loadedmetadata', () => {
 function tick() {
   if (video.readyState === video.HAVE_ENOUGH_DATA) {
     sampleCtx.drawImage(video, 0, 0, sampleCanvas.width, sampleCanvas.height);
+    latestDetections = scanForQRCodes();
 
     overlayCtx.clearRect(0, 0, overlay.width, overlay.height);
-    for (const qrCode of scanForQRCodes()) {
+    for (const qrCode of latestDetections) {
       drawBox(qrCode.location);
       drawLabel(qrCode.location, qrCode.data);
     }
+
+    renderStage();
   }
 
   requestAnimationFrame(tick);
+}
+
+function renderStage() {
+  stageCtx.clearRect(0, 0, stage.width, stage.height);
+
+  if (calibrating) {
+    drawCalibrationTarget();
+    return;
+  }
+
+  if (!homography) {
+    return;
+  }
+
+  for (const qrCode of latestDetections) {
+    drawHalo(applyHomography(homography, centerOf(qrCode.location)));
+  }
+}
+
+function drawCalibrationTarget() {
+  const { x, y } = calibrationTargets()[calibrationStep];
+
+  stageCtx.strokeStyle = '#ffee00';
+  stageCtx.lineWidth = 3;
+  stageCtx.beginPath();
+  stageCtx.moveTo(x - 20, y);
+  stageCtx.lineTo(x + 20, y);
+  stageCtx.moveTo(x, y - 20);
+  stageCtx.lineTo(x, y + 20);
+  stageCtx.arc(x, y, 12, 0, Math.PI * 2);
+  stageCtx.stroke();
+}
+
+function drawHalo(point) {
+  stageCtx.save();
+  stageCtx.shadowColor = '#ffee00';
+  stageCtx.shadowBlur = 30;
+  stageCtx.strokeStyle = '#ffee00';
+  stageCtx.lineWidth = 8;
+  stageCtx.beginPath();
+  stageCtx.arc(point.x, point.y, 40, 0, Math.PI * 2);
+  stageCtx.stroke();
+  stageCtx.restore();
+}
+
+// Solves for a homography (a 3x3 projective transform, with h33 fixed to 1)
+// that maps each point's `camera` coordinates onto its `screen` coordinates,
+// given the four correspondences gathered during calibration.
+function computeHomography(points) {
+  const A = [];
+  const b = [];
+
+  for (const { camera, screen } of points) {
+    const { x, y } = camera;
+    A.push([x, y, 1, 0, 0, 0, -x * screen.x, -y * screen.x]);
+    b.push(screen.x);
+    A.push([0, 0, 0, x, y, 1, -x * screen.y, -y * screen.y]);
+    b.push(screen.y);
+  }
+
+  const [h11, h12, h13, h21, h22, h23, h31, h32] = solveLinearSystem(A, b);
+  return [h11, h12, h13, h21, h22, h23, h31, h32, 1];
+}
+
+function applyHomography(h, point) {
+  const [h11, h12, h13, h21, h22, h23, h31, h32, h33] = h;
+  const w = h31 * point.x + h32 * point.y + h33;
+  return {
+    x: (h11 * point.x + h12 * point.y + h13) / w,
+    y: (h21 * point.x + h22 * point.y + h23) / w,
+  };
+}
+
+// Solves the linear system A * x = b via Gaussian elimination with partial
+// pivoting.
+function solveLinearSystem(A, b) {
+  const n = A.length;
+  const rows = A.map((row, i) => [...row, b[i]]);
+
+  for (let col = 0; col < n; col += 1) {
+    let pivotRow = col;
+    for (let row = col + 1; row < n; row += 1) {
+      if (Math.abs(rows[row][col]) > Math.abs(rows[pivotRow][col])) {
+        pivotRow = row;
+      }
+    }
+    [rows[col], rows[pivotRow]] = [rows[pivotRow], rows[col]];
+
+    for (let row = col + 1; row < n; row += 1) {
+      const factor = rows[row][col] / rows[col][col];
+      for (let c = col; c <= n; c += 1) {
+        rows[row][c] -= factor * rows[col][c];
+      }
+    }
+  }
+
+  const x = new Array(n).fill(0);
+  for (let row = n - 1; row >= 0; row -= 1) {
+    let sum = rows[row][n];
+    for (let col = row + 1; col < n; col += 1) {
+      sum -= rows[row][col] * x[col];
+    }
+    x[row] = sum / rows[row][row];
+  }
+
+  return x;
 }
 
 function scanForQRCodes() {
