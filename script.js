@@ -1,13 +1,8 @@
 const video = document.getElementById('webcam');
-const overlay = document.getElementById('overlay');
-const overlayCtx = overlay.getContext('2d');
 const cameraSelect = document.getElementById('cameraSelect');
 const stage = document.getElementById('stage');
 const stageCtx = stage.getContext('2d');
-const calibrateButton = document.getElementById('calibrateButton');
-const calibrationPanel = document.getElementById('calibration');
-const calibrationInstruction = document.getElementById('calibrationInstruction');
-const captureCalibrationPointButton = document.getElementById('captureCalibrationPoint');
+const statusEl = document.getElementById('status');
 
 let sampleCanvas;
 let sampleCtx;
@@ -17,14 +12,26 @@ let latestDetections = [];
 
 // Maps a point in the camera's pixel space onto the screen's pixel space, so
 // a code's position as seen from above corresponds to where it physically
-// sits on the display. Set once calibration finishes; see calibrate().
+// sits on the display. Recomputed continuously; see updateHomography().
 let homography = null;
-let calibrating = false;
-let calibrationStep = 0;
-let calibrationPoints = [];
 
-const CALIBRATION_TARGET_LABELS = ['top-left', 'top-right', 'bottom-right', 'bottom-left'];
-const CALIBRATION_MARGIN = 60;
+// Fixed QR codes rendered at the four known screen corners. Detecting all
+// four in a frame gives four (camera position, screen position)
+// correspondences, enough to (re)solve the homography, so calibration stays
+// correct even if the camera or screen moves.
+const CORNER_MARKERS = [
+  { element: document.getElementById('cornerTL'), data: 'corner:tl' },
+  { element: document.getElementById('cornerTR'), data: 'corner:tr' },
+  { element: document.getElementById('cornerBR'), data: 'corner:br' },
+  { element: document.getElementById('cornerBL'), data: 'corner:bl' },
+];
+
+for (const marker of CORNER_MARKERS) {
+  const qr = qrcode(0, 'L');
+  qr.addData(marker.data);
+  qr.make();
+  marker.element.innerHTML = qr.createSvgTag(4, 0);
+}
 
 function videoConstraints(deviceId) {
   return {
@@ -79,57 +86,6 @@ function resizeStage() {
 window.addEventListener('resize', resizeStage);
 resizeStage();
 
-// The four corners of the screen, in screen pixel space, that the user is
-// asked to place a code on top of in turn during calibration.
-function calibrationTargets() {
-  return [
-    { x: CALIBRATION_MARGIN, y: CALIBRATION_MARGIN },
-    { x: stage.width - CALIBRATION_MARGIN, y: CALIBRATION_MARGIN },
-    { x: stage.width - CALIBRATION_MARGIN, y: stage.height - CALIBRATION_MARGIN },
-    { x: CALIBRATION_MARGIN, y: stage.height - CALIBRATION_MARGIN },
-  ];
-}
-
-function startCalibration() {
-  calibrating = true;
-  calibrationStep = 0;
-  calibrationPoints = [];
-  stage.classList.remove('opaque');
-  calibrationPanel.hidden = false;
-  showCalibrationStep();
-}
-
-function showCalibrationStep() {
-  const label = CALIBRATION_TARGET_LABELS[calibrationStep];
-  calibrationInstruction.textContent = `Place a QR code at the ${label} marker, then press Capture.`;
-}
-
-function captureCalibrationPoint() {
-  if (latestDetections.length === 0) {
-    calibrationInstruction.textContent = 'No QR code seen — place one on the marker and try again.';
-    return;
-  }
-
-  calibrationPoints.push({
-    camera: centerOf(latestDetections[0].location),
-    screen: calibrationTargets()[calibrationStep],
-  });
-
-  calibrationStep += 1;
-  if (calibrationStep < CALIBRATION_TARGET_LABELS.length) {
-    showCalibrationStep();
-    return;
-  }
-
-  homography = computeHomography(calibrationPoints);
-  calibrating = false;
-  calibrationPanel.hidden = true;
-  stage.classList.add('opaque');
-}
-
-calibrateButton.addEventListener('click', startCalibration);
-captureCalibrationPointButton.addEventListener('click', captureCalibrationPoint);
-
 // Approximate size of a QR code in the captured frame, in pixels.
 const QR_SIZE = 150;
 // jsQR only ever returns one decoded symbol per call, so to find multiple
@@ -142,9 +98,6 @@ const TILE_SIZE = QR_SIZE * 2;
 const TILE_STEP = QR_SIZE;
 
 video.addEventListener('loadedmetadata', () => {
-  overlay.width = video.videoWidth;
-  overlay.height = video.videoHeight;
-
   sampleCanvas = document.createElement('canvas');
   sampleCanvas.width = video.videoWidth;
   sampleCanvas.height = video.videoHeight;
@@ -161,64 +114,83 @@ function tick() {
     sampleCtx.drawImage(video, 0, 0, sampleCanvas.width, sampleCanvas.height);
     latestDetections = scanForQRCodes();
 
-    overlayCtx.clearRect(0, 0, overlay.width, overlay.height);
-    for (const qrCode of latestDetections) {
-      drawBox(qrCode.location);
-      drawLabel(qrCode.location, qrCode.data);
-    }
-
+    updateHomography();
     renderStage();
   }
 
   requestAnimationFrame(tick);
 }
 
+// Looks for all four corner markers in the current frame and, if all are
+// found, (re)solves the homography from their known screen positions and
+// detected camera positions. If any are missing this frame (temporarily
+// occluded, out of view, etc.), the previous homography is kept as-is.
+function updateHomography() {
+  const correspondences = [];
+
+  for (const marker of CORNER_MARKERS) {
+    const detection = latestDetections.find((d) => d.data === marker.data);
+    if (!detection) {
+      statusEl.textContent = homography ? 'Tracking (last calibration)' : 'Calibrating…';
+      return;
+    }
+
+    correspondences.push({
+      camera: centerOf(detection.location),
+      screen: elementCenter(marker.element),
+    });
+  }
+
+  homography = computeHomography(correspondences);
+  statusEl.textContent = 'Tracking';
+}
+
+function elementCenter(element) {
+  const rect = element.getBoundingClientRect();
+  return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+}
+
+function isCornerMarker(data) {
+  return CORNER_MARKERS.some((marker) => marker.data === data);
+}
+
 function renderStage() {
   stageCtx.clearRect(0, 0, stage.width, stage.height);
-
-  if (calibrating) {
-    drawCalibrationTarget();
-    return;
-  }
 
   if (!homography) {
     return;
   }
 
   for (const qrCode of latestDetections) {
-    drawHalo(applyHomography(homography, centerOf(qrCode.location)));
+    if (isCornerMarker(qrCode.data)) {
+      continue;
+    }
+
+    const center = applyHomography(homography, centerOf(qrCode.location));
+    const corner = applyHomography(homography, qrCode.location.topLeftCorner);
+    const radius = Math.hypot(corner.x - center.x, corner.y - center.y) * 1.3;
+
+    drawHalo(center, radius);
   }
 }
 
-function drawCalibrationTarget() {
-  const { x, y } = calibrationTargets()[calibrationStep];
+// A soft radial glow, sized bigger than the code itself so it shows through
+// around its edges, rather than a hard-edged shape.
+function drawHalo(center, radius) {
+  const gradient = stageCtx.createRadialGradient(center.x, center.y, 0, center.x, center.y, radius);
+  gradient.addColorStop(0, 'rgba(255, 238, 0, 0.85)');
+  gradient.addColorStop(0.7, 'rgba(255, 238, 0, 0.35)');
+  gradient.addColorStop(1, 'rgba(255, 238, 0, 0)');
 
-  stageCtx.strokeStyle = '#ffee00';
-  stageCtx.lineWidth = 3;
+  stageCtx.fillStyle = gradient;
   stageCtx.beginPath();
-  stageCtx.moveTo(x - 20, y);
-  stageCtx.lineTo(x + 20, y);
-  stageCtx.moveTo(x, y - 20);
-  stageCtx.lineTo(x, y + 20);
-  stageCtx.arc(x, y, 12, 0, Math.PI * 2);
-  stageCtx.stroke();
-}
-
-function drawHalo(point) {
-  stageCtx.save();
-  stageCtx.shadowColor = '#ffee00';
-  stageCtx.shadowBlur = 30;
-  stageCtx.strokeStyle = '#ffee00';
-  stageCtx.lineWidth = 8;
-  stageCtx.beginPath();
-  stageCtx.arc(point.x, point.y, 40, 0, Math.PI * 2);
-  stageCtx.stroke();
-  stageCtx.restore();
+  stageCtx.arc(center.x, center.y, radius, 0, Math.PI * 2);
+  stageCtx.fill();
 }
 
 // Solves for a homography (a 3x3 projective transform, with h33 fixed to 1)
 // that maps each point's `camera` coordinates onto its `screen` coordinates,
-// given the four correspondences gathered during calibration.
+// given the four corner-marker correspondences for this frame.
 function computeHomography(points) {
   const A = [];
   const b = [];
@@ -361,37 +333,4 @@ function centerOf(location) {
     x: (topLeftCorner.x + bottomRightCorner.x) / 2,
     y: (topLeftCorner.y + bottomRightCorner.y) / 2,
   };
-}
-
-function drawBox(location) {
-  const { topLeftCorner, topRightCorner, bottomRightCorner, bottomLeftCorner } = location;
-
-  overlayCtx.strokeStyle = '#00ff00';
-  overlayCtx.lineWidth = Math.max(4, overlay.width * 0.006);
-  overlayCtx.beginPath();
-  overlayCtx.moveTo(topLeftCorner.x, topLeftCorner.y);
-  overlayCtx.lineTo(topRightCorner.x, topRightCorner.y);
-  overlayCtx.lineTo(bottomRightCorner.x, bottomRightCorner.y);
-  overlayCtx.lineTo(bottomLeftCorner.x, bottomLeftCorner.y);
-  overlayCtx.closePath();
-  overlayCtx.stroke();
-}
-
-function drawLabel(location, text) {
-  const { bottomLeftCorner, bottomRightCorner } = location;
-
-  const fontSize = Math.max(16, overlay.width * 0.02);
-  const padding = fontSize * 0.25;
-  const x = Math.min(bottomLeftCorner.x, bottomRightCorner.x);
-  const y = Math.max(bottomLeftCorner.y, bottomRightCorner.y) + padding;
-
-  overlayCtx.font = `${fontSize}px monospace`;
-  overlayCtx.textBaseline = 'top';
-  const textWidth = overlayCtx.measureText(text).width;
-
-  overlayCtx.fillStyle = 'rgba(0, 0, 0, 0.6)';
-  overlayCtx.fillRect(x - padding, y - padding, textWidth + padding * 2, fontSize + padding * 2);
-
-  overlayCtx.fillStyle = '#00ff00';
-  overlayCtx.fillText(text, x, y);
 }
