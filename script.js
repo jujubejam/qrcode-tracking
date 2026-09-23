@@ -189,14 +189,14 @@ function renderStage() {
     const topLeft = applyHomography(homography, topLeftCorner);
     const topRight = applyHomography(homography, topRightCorner);
 
-    const radius = Math.hypot(topLeft.x - center.x, topLeft.y - center.y) * 1.3;
+    const radius = Math.hypot(topLeft.x - center.x, topLeft.y - center.y) * 1.3 * 2;
 
-    // One code-width above the code's own top edge, so the portal floats
+    // Half a code-width above the code's own top edge, so the portal floats
     // above it rather than sitting directly on top of it.
     const codeWidth = Math.hypot(topRight.x - topLeft.x, topRight.y - topLeft.y);
     const portalCenter = {
       x: (topLeft.x + topRight.x) / 2,
-      y: (topLeft.y + topRight.y) / 2 - codeWidth,
+      y: (topLeft.y + topRight.y) / 2 - codeWidth * 0.5,
     };
 
     drawPortal(portalCenter, radius);
