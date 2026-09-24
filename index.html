@@ -8,9 +8,20 @@
 </head>
 <body>
   <video id="webcam" autoplay playsinline muted></video>
-  <canvas id="overlay"></canvas>
+  <canvas id="stage"></canvas>
   <select id="cameraSelect"></select>
+  <p id="status"></p>
+  <p id="detectedCodes"></p>
+  <p id="detectionRate"></p>
+
+  <div id="cornerTL" class="corner-marker corner-tl"></div>
+  <div id="cornerTR" class="corner-marker corner-tr"></div>
+  <div id="cornerBR" class="corner-marker corner-br"></div>
+  <div id="cornerBL" class="corner-marker corner-bl"></div>
+
   <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/js-aruco2@2.0.0/src/cv.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/js-aruco2@2.0.0/src/aruco.js"></script>
   <script src="script.js"></script>
 </body>
 </html>
