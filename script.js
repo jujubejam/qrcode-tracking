@@ -23,6 +23,40 @@ let sampleCtx;
 let tickLoopStarted = false;
 let latestDetections = [];
 
+// Token QR scanning runs on a downscaled copy of the frame rather than the
+// full capture resolution, since jsQR's cost scales with total pixels
+// examined. This lets us afford full tile overlap (see TILE_STEP below)
+// for reliability while still being faster overall than scanning the full
+// resolution without overlap. Corner-marker (ArUco) detection is unrelated
+// and still runs on the full-resolution frame, unchanged.
+const DETECTION_MAX_WIDTH = 1280;
+let detectionCanvas;
+let detectionCtx;
+let detectionScale = 1;
+
+// Rolling once-a-second readout of how often jsQR actually decodes
+// something, to distinguish "detection is genuinely unreliable right now"
+// from other causes of a missing portal.
+let scansThisWindow = 0;
+let successesThisWindow = 0;
+let statsWindowStart = performance.now();
+const detectionRateEl = document.getElementById('detectionRate');
+
+function recordScanResult(succeeded) {
+  scansThisWindow += 1;
+  if (succeeded) {
+    successesThisWindow += 1;
+  }
+
+  const now = performance.now();
+  if (now - statsWindowStart >= 1000) {
+    detectionRateEl.textContent = `Decode rate: ${successesThisWindow}/${scansThisWindow} frames/sec`;
+    scansThisWindow = 0;
+    successesThisWindow = 0;
+    statsWindowStart = now;
+  }
+}
+
 // jsQR data is matched exactly, so incidental whitespace or casing from
 // however a code was generated (e.g. "Phone " vs "phone") would otherwise
 // silently fail to match anything in PORTAL_IMAGES_BY_DATA.
@@ -140,23 +174,35 @@ function resizeStage() {
 window.addEventListener('resize', resizeStage);
 resizeStage();
 
-// Approximate size of a QR code in the captured frame, in pixels.
-const QR_SIZE = 150;
+// Approximate size of a QR code in the captured frame, in pixels, at a
+// 1920-wide capture. Scaled down to match the actual detection resolution
+// once it's known (see loadedmetadata below).
+const QR_SIZE_AT_FULL_RES = 150;
 // jsQR only ever returns one decoded symbol per call, so to find multiple
-// codes in a frame we scan crop windows across the image and decode each
-// one separately. The window is bigger than a code (with room for its
-// quiet zone). Stepping by the full tile size (no overlap) means fewer
-// decode attempts per frame, so reacts faster, at the cost of occasionally
-// missing a code that lands right on a tile boundary until it (or the
-// camera) shifts slightly.
-const TILE_SIZE = QR_SIZE * 2;
-const TILE_STEP = TILE_SIZE;
+// codes in a frame we scan overlapping crop windows across the image and
+// decode each one separately. The window is bigger than a code (with room
+// for its quiet zone) and the step is small enough that the overlap between
+// adjacent windows is at least one code-width, so no code can fall entirely
+// across a window boundary and get missed.
+let QR_SIZE;
+let TILE_SIZE;
+let TILE_STEP;
 
 video.addEventListener('loadedmetadata', () => {
   sampleCanvas = document.createElement('canvas');
   sampleCanvas.width = video.videoWidth;
   sampleCanvas.height = video.videoHeight;
   sampleCtx = sampleCanvas.getContext('2d', { willReadFrequently: true });
+
+  detectionScale = Math.min(1, DETECTION_MAX_WIDTH / video.videoWidth);
+  detectionCanvas = document.createElement('canvas');
+  detectionCanvas.width = Math.round(video.videoWidth * detectionScale);
+  detectionCanvas.height = Math.round(video.videoHeight * detectionScale);
+  detectionCtx = detectionCanvas.getContext('2d', { willReadFrequently: true });
+
+  QR_SIZE = Math.round(QR_SIZE_AT_FULL_RES * detectionScale);
+  TILE_SIZE = QR_SIZE * 2;
+  TILE_STEP = QR_SIZE;
 
   if (!tickLoopStarted) {
     tickLoopStarted = true;
@@ -168,10 +214,13 @@ function tick() {
   if (video.readyState === video.HAVE_ENOUGH_DATA) {
     sampleCtx.drawImage(video, 0, 0, sampleCanvas.width, sampleCanvas.height);
     const frame = sampleCtx.getImageData(0, 0, sampleCanvas.width, sampleCanvas.height);
-
     updateHomography(frame);
+
+    detectionCtx.drawImage(video, 0, 0, detectionCanvas.width, detectionCanvas.height);
     latestDetections = scanForQRCodes();
+    recordScanResult(latestDetections.length > 0);
     updateTrackedTokens(latestDetections);
+
     renderStage();
   }
 
@@ -339,13 +388,13 @@ function solveLinearSystem(A, b) {
 }
 
 function scanForQRCodes() {
-  const xs = getTilePositions(sampleCanvas.width);
-  const ys = getTilePositions(sampleCanvas.height);
+  const xs = getTilePositions(detectionCanvas.width);
+  const ys = getTilePositions(detectionCanvas.height);
   const detections = [];
 
   for (const y of ys) {
     for (const x of xs) {
-      const tile = sampleCtx.getImageData(x, y, TILE_SIZE, TILE_SIZE);
+      const tile = detectionCtx.getImageData(x, y, TILE_SIZE, TILE_SIZE);
       const qrCode = jsQR(tile.data, TILE_SIZE, TILE_SIZE);
       if (qrCode) {
         detections.push(offsetQRCode(qrCode, x, y));
@@ -353,7 +402,26 @@ function scanForQRCodes() {
     }
   }
 
-  return dedupeDetections(detections);
+  // Dedupe in detection-canvas space (matching QR_SIZE's own scale), then
+  // convert to full-resolution camera-space coordinates so positions line
+  // up with the homography, which is built from full-resolution corner
+  // detections.
+  return dedupeDetections(detections).map(scaleUpToFullRes);
+}
+
+function scaleUpToFullRes(qrCode) {
+  const scale = (point) => ({ x: point.x / detectionScale, y: point.y / detectionScale });
+  const { topLeftCorner, topRightCorner, bottomRightCorner, bottomLeftCorner } = qrCode.location;
+
+  return {
+    data: qrCode.data,
+    location: {
+      topLeftCorner: scale(topLeftCorner),
+      topRightCorner: scale(topRightCorner),
+      bottomRightCorner: scale(bottomRightCorner),
+      bottomLeftCorner: scale(bottomLeftCorner),
+    },
+  };
 }
 
 // Start offsets for tiles of TILE_SIZE covering `dimension`, stepping by

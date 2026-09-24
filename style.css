@@ -43,13 +43,23 @@ html, body {
 
 #detectedCodes {
   position: absolute;
-  bottom: 16px;
+  bottom: 36px;
   left: 16px;
   z-index: 2;
   margin: 0;
   font: 14px monospace;
   color: #00ff88;
   max-width: 60vw;
+}
+
+#detectionRate {
+  position: absolute;
+  bottom: 16px;
+  left: 16px;
+  z-index: 2;
+  margin: 0;
+  font: 14px monospace;
+  color: #00ccff;
 }
 
 /* The stage sits over the raw camera feed at all times, showing only the
