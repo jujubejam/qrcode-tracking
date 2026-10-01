@@ -136,6 +136,53 @@ for (const marker of STATUS_MARKERS) {
   marker.element.innerHTML = qr.createSvgTag(4, 0);
 }
 
+// Each status marker has a square "land" around it (the dashed box drawn in
+// CSS). A recognized character (a token with a portal image) standing in
+// one is considered "on" that land. The assignment is remembered even
+// after the character is no longer in view, so it can still be asked about
+// later; it's only ever overwritten by a fresh sighting, never cleared by
+// one going missing.
+const LANDS = [
+  { element: document.getElementById('landZone1'), name: 'doing great' },
+  { element: document.getElementById('landZone2'), name: "it's alright" },
+  { element: document.getElementById('landZone3'), name: 'SOS' },
+];
+
+const characterLands = new Map();
+const characterLandsEl = document.getElementById('characterLands');
+
+function elementRect(element) {
+  const rect = element.getBoundingClientRect();
+  return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
+}
+
+function landContaining(point) {
+  for (const land of LANDS) {
+    const rect = elementRect(land.element);
+    if (point.x >= rect.left && point.x <= rect.right && point.y >= rect.top && point.y <= rect.bottom) {
+      return land.name;
+    }
+  }
+  return null;
+}
+
+function updateCharacterLands() {
+  for (const { data, location } of trackedTokens.values()) {
+    if (!PORTAL_IMAGES_BY_DATA[data] || !homography) {
+      continue;
+    }
+
+    const land = landContaining(applyHomography(homography, centerOf(location)));
+    if (land) {
+      characterLands.set(data, land);
+    }
+  }
+
+  characterLandsEl.textContent = characterLands.size
+    ? [...characterLands.entries()].map(([name, land]) => `${name}: ${land}`).join('  |  ')
+    : '';
+}
+
 function videoConstraints(deviceId) {
   return {
     video: {
@@ -237,6 +284,7 @@ function tick() {
     latestDetections = scanForQRCodes();
     recordScanResult(latestDetections.length > 0);
     updateTrackedTokens(latestDetections);
+    updateCharacterLands();
 
     renderStage();
   }
