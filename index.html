@@ -19,9 +19,29 @@
   <div id="cornerBR" class="corner-marker corner-br"></div>
   <div id="cornerBL" class="corner-marker corner-bl"></div>
 
-  <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+  <div class="land-zone land-zone-1" id="landZone1"></div>
+  <div class="land-zone land-zone-2" id="landZone2"></div>
+  <div class="land-zone land-zone-3" id="landZone3"></div>
+
+  <div class="status-marker status-marker-1">
+    <div class="status-marker-qr" id="statusQR1"></div>
+    <div class="status-marker-label">doing great</div>
+  </div>
+  <div class="status-marker status-marker-2">
+    <div class="status-marker-qr" id="statusQR2"></div>
+    <div class="status-marker-label">alright</div>
+  </div>
+  <div class="status-marker status-marker-3">
+    <div class="status-marker-qr" id="statusQR3"></div>
+    <div class="status-marker-label">SOS</div>
+  </div>
+
+  <p id="characterLands"></p>
+
+  <script src="https://cdn.jsdelivr.net/npm/zxing-wasm@3.1.4/dist/iife/reader/index.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/js-aruco2@2.0.0/src/cv.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/js-aruco2@2.0.0/src/aruco.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js"></script>
   <script src="script.js"></script>
 </body>
 </html>

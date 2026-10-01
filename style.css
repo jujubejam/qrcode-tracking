@@ -81,8 +81,8 @@ html, body {
 .corner-marker {
   position: absolute;
   z-index: 2;
-  width: 140px;
-  height: 140px;
+  width: 100px;
+  height: 100px;
   outline: 4px solid transparent;
   box-shadow: 0 0 0 transparent;
   transition: outline-color 0.1s, box-shadow 0.1s;
@@ -117,4 +117,90 @@ html, body {
 .corner-bl {
   bottom: 16px;
   left: 16px;
+}
+
+/* Three static, labeled QR codes, each in the middle of its own square
+   "land" (see .land-zone), spread out across the display. */
+.status-marker {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 3;
+  text-align: center;
+}
+
+.status-marker-1 {
+  left: 12%;
+}
+
+.status-marker-2 {
+  left: 50%;
+}
+
+.status-marker-3 {
+  left: 88%;
+}
+
+.status-marker-qr {
+  width: 110px;
+  height: 110px;
+  margin: 0 auto;
+}
+
+.status-marker-qr svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.status-marker-label {
+  margin-top: 6px;
+  font: 14px monospace;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.6);
+  padding: 2px 6px;
+  display: inline-block;
+}
+
+/* The square region around each status marker that counts as "on" that
+   land. Script.js reads each zone's actual rendered box (via
+   getBoundingClientRect) to test whether a tracked character is inside it,
+   so this size/position is the single source of truth for both the visual
+   boundary and the hit-test. */
+.land-zone {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 2;
+  width: clamp(260px, 38vmin, 460px);
+  height: clamp(260px, 38vmin, 460px);
+  border: 3px dashed rgba(245, 226, 186, 0.8);
+  background: rgba(245, 226, 186, 0.08);
+  box-sizing: border-box;
+}
+
+.land-zone-1 {
+  left: 12%;
+}
+
+.land-zone-2 {
+  left: 50%;
+}
+
+.land-zone-3 {
+  left: 88%;
+}
+
+#characterLands {
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2;
+  margin: 0;
+  font: 14px monospace;
+  color: #F5E2BA;
+  background: rgba(0, 0, 0, 0.6);
+  padding: 4px 10px;
+  white-space: nowrap;
 }

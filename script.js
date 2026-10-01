@@ -18,23 +18,110 @@ const PORTAL_IMAGES_BY_DATA = {
   'object-a': loadImage('portal_warm.png'),
 };
 
+// Human-readable names for the same recognized characters, used for the
+// on-screen nameplate, the spoken announcement, and the "X is Y" land
+// readout.
+const CHARACTER_NAMES = {
+  phone: '雨轩',
+  'object-a': 'JuJu',
+};
+
+function hasCJK(text) {
+  return /[一-鿿]/.test(text);
+}
+
+// Speaks one utterance, auto-detecting a Chinese voice for CJK text so it's
+// pronounced correctly rather than mangled by an English voice. Consecutive
+// speak() calls are queued by the browser and play back-to-back, which is
+// used to mix a CJK name with an English phrase in a single announcement
+// (see announceLand) without either part being read in the wrong voice.
+function speak(text) {
+  if (!('speechSynthesis' in window)) {
+    return;
+  }
+
+  const utterance = new SpeechSynthesisUtterance(text);
+  if (hasCJK(text)) {
+    utterance.lang = 'zh-CN';
+  }
+  speechSynthesis.speak(utterance);
+}
+
+// A brief detection flicker (the code drops out of trackedTokens for just
+// over TOKEN_PERSISTENCE_MS, then reappears) looks identical to a genuine
+// new appearance, which would otherwise re-announce repeatedly while the
+// token sits perfectly still — and since speechSynthesis queues every
+// speak() call, those pile up and keep playing for seconds after the token
+// is gone. This cooldown is independent of (and much longer than) the
+// visual persistence window, so flicker can't spam it; a real re-placement
+// of the token after being away for a while still announces again.
+const ANNOUNCE_COOLDOWN_MS = 8000;
+const lastAnnouncedAt = new Map();
+
+// Reads a character's name aloud when its portal first appears, subject to
+// the cooldown above (see the isNewSighting check in updateTrackedTokens).
+function announceCharacter(data) {
+  const name = CHARACTER_NAMES[data];
+  if (!name) {
+    return;
+  }
+
+  const now = performance.now();
+  if (now - (lastAnnouncedAt.get(data) ?? -Infinity) < ANNOUNCE_COOLDOWN_MS) {
+    return;
+  }
+  lastAnnouncedAt.set(data, now);
+
+  speak(name);
+}
+
+// Reads "<name> is <land>" aloud once, the moment a character's land
+// assignment is first set or changes (see updateCharacterLands) — not on
+// every frame it stays on the same land. Split into two utterances so a
+// CJK name and the English land phrase are each spoken in the right voice.
+function announceLand(data, land) {
+  const name = CHARACTER_NAMES[data];
+  if (name) {
+    speak(name);
+    speak(`is ${land}`);
+  }
+}
+
+// readBarcodes() fetches and instantiates the wasm module lazily on its
+// first call, which would otherwise stall the very first real frame.
+// Kicking that off immediately on load means it's ready well before the
+// camera stream and first video frame are. Wrapped defensively: if this
+// library fails to load or init for any reason, that must never be able to
+// block camera access (an unrelated, more important concern) by throwing
+// an uncaught error here.
+try {
+  ZXingWASM.prepareZXingModule({ fireImmediately: true });
+} catch (error) {
+  console.error('Failed to initialize zxing-wasm:', error);
+}
+
 let sampleCanvas;
 let sampleCtx;
 let tickLoopStarted = false;
 let latestDetections = [];
 
 // Token QR scanning runs on a downscaled copy of the frame rather than the
-// full capture resolution, since jsQR's cost scales with total pixels
-// examined. This lets us afford full tile overlap (see TILE_STEP below)
-// for reliability while still being faster overall than scanning the full
-// resolution without overlap. Corner-marker (ArUco) detection is unrelated
+// full capture resolution, purely to cut the number of pixels zxing-wasm
+// has to examine per frame. Corner-marker (ArUco) detection is unrelated
 // and still runs on the full-resolution frame, unchanged.
 const DETECTION_MAX_WIDTH = 1280;
 let detectionCanvas;
 let detectionCtx;
 let detectionScale = 1;
 
-// Rolling once-a-second readout of how often jsQR actually decodes
+// readBarcodes() is async and, per frame, meaningfully slower than a
+// synchronous call — awaiting it inline in the render loop would stall
+// rendering. Instead it's kicked off without blocking tick(), and this
+// flag stops a new scan from starting while one is still in flight (so a
+// slow frame can't pile up a backlog of overlapping scans).
+let detectionInFlight = false;
+
+// Rolling once-a-second readout of how often a scan actually decodes
 // something, to distinguish "detection is genuinely unreliable right now"
 // from other causes of a missing portal.
 let scansThisWindow = 0;
@@ -57,7 +144,7 @@ function recordScanResult(succeeded) {
   }
 }
 
-// jsQR data is matched exactly, so incidental whitespace or casing from
+// Decoded data is matched exactly, so incidental whitespace or casing from
 // however a code was generated (e.g. "Phone " vs "phone") would otherwise
 // silently fail to match anything in PORTAL_IMAGES_BY_DATA.
 function normalizeData(data) {
@@ -76,7 +163,12 @@ function updateTrackedTokens(detections) {
 
   for (const detection of detections) {
     const data = normalizeData(detection.data);
+    const isNewSighting = !trackedTokens.has(data);
     trackedTokens.set(data, { data, location: detection.location, lastSeen: now });
+
+    if (isNewSighting) {
+      announceCharacter(data);
+    }
   }
 
   for (const [data, token] of trackedTokens) {
@@ -117,6 +209,73 @@ const arDetector = new AR.Detector();
 
 for (const marker of CORNER_MARKERS) {
   marker.element.innerHTML = arDictionary.generateSVG(marker.id);
+}
+
+// Three static status QR codes placed on the display itself. Unlike the
+// corner markers (used for calibration) and tracked tokens (physical
+// objects placed on the surface), these are just fixed, labeled codes shown
+// on screen — e.g. for someone to scan directly with a phone.
+const STATUS_MARKERS = [
+  { element: document.getElementById('statusQR1'), data: 'doing great' },
+  { element: document.getElementById('statusQR2'), data: 'alright' },
+  { element: document.getElementById('statusQR3'), data: 'SOS' },
+];
+
+for (const marker of STATUS_MARKERS) {
+  const qr = qrcode(0, 'L');
+  qr.addData(marker.data);
+  qr.make();
+  marker.element.innerHTML = qr.createSvgTag(4, 0);
+}
+
+// Each status marker has a square "land" around it (the dashed box drawn in
+// CSS). A recognized character (a token with a portal image) standing in
+// one is considered "on" that land. The assignment is remembered even
+// after the character is no longer in view, so it can still be asked about
+// later; it's only ever overwritten by a fresh sighting, never cleared by
+// one going missing.
+const LANDS = [
+  { element: document.getElementById('landZone1'), name: 'doing great' },
+  { element: document.getElementById('landZone2'), name: 'alright' },
+  { element: document.getElementById('landZone3'), name: 'SOS' },
+];
+
+const characterLands = new Map();
+const characterLandsEl = document.getElementById('characterLands');
+
+function elementRect(element) {
+  const rect = element.getBoundingClientRect();
+  return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
+}
+
+function landContaining(point) {
+  for (const land of LANDS) {
+    const rect = elementRect(land.element);
+    if (point.x >= rect.left && point.x <= rect.right && point.y >= rect.top && point.y <= rect.bottom) {
+      return land.name;
+    }
+  }
+  return null;
+}
+
+function updateCharacterLands() {
+  for (const { data, location } of trackedTokens.values()) {
+    if (!PORTAL_IMAGES_BY_DATA[data] || !homography) {
+      continue;
+    }
+
+    const land = landContaining(applyHomography(homography, centerOf(location)));
+    if (land && characterLands.get(data) !== land) {
+      characterLands.set(data, land);
+      announceLand(data, land);
+    }
+  }
+
+  characterLandsEl.textContent = characterLands.size
+    ? [...characterLands.entries()]
+        .map(([data, land]) => `${CHARACTER_NAMES[data] || data} is ${land}`)
+        .join('  |  ')
+    : '';
 }
 
 function videoConstraints(deviceId) {
@@ -174,20 +333,6 @@ function resizeStage() {
 window.addEventListener('resize', resizeStage);
 resizeStage();
 
-// Approximate size of a QR code in the captured frame, in pixels, at a
-// 1920-wide capture. Scaled down to match the actual detection resolution
-// once it's known (see loadedmetadata below).
-const QR_SIZE_AT_FULL_RES = 150;
-// jsQR only ever returns one decoded symbol per call, so to find multiple
-// codes in a frame we scan overlapping crop windows across the image and
-// decode each one separately. The window is bigger than a code (with room
-// for its quiet zone) and the step is small enough that the overlap between
-// adjacent windows is at least one code-width, so no code can fall entirely
-// across a window boundary and get missed.
-let QR_SIZE;
-let TILE_SIZE;
-let TILE_STEP;
-
 video.addEventListener('loadedmetadata', () => {
   sampleCanvas = document.createElement('canvas');
   sampleCanvas.width = video.videoWidth;
@@ -199,10 +344,6 @@ video.addEventListener('loadedmetadata', () => {
   detectionCanvas.width = Math.round(video.videoWidth * detectionScale);
   detectionCanvas.height = Math.round(video.videoHeight * detectionScale);
   detectionCtx = detectionCanvas.getContext('2d', { willReadFrequently: true });
-
-  QR_SIZE = Math.round(QR_SIZE_AT_FULL_RES * detectionScale);
-  TILE_SIZE = QR_SIZE * 2;
-  TILE_STEP = QR_SIZE;
 
   if (!tickLoopStarted) {
     tickLoopStarted = true;
@@ -216,10 +357,10 @@ function tick() {
     const frame = sampleCtx.getImageData(0, 0, sampleCanvas.width, sampleCanvas.height);
     updateHomography(frame);
 
-    detectionCtx.drawImage(video, 0, 0, detectionCanvas.width, detectionCanvas.height);
-    latestDetections = scanForQRCodes();
-    recordScanResult(latestDetections.length > 0);
-    updateTrackedTokens(latestDetections);
+    // Fire-and-forget: scanForQRCodes() is async, and this loop shouldn't
+    // stall waiting on it. Rendering (below) always uses whatever the most
+    // recently completed scan found.
+    scanForQRCodes();
 
     renderStage();
   }
@@ -285,11 +426,12 @@ function renderStage() {
       continue;
     }
 
-    const { topLeftCorner, topRightCorner, bottomLeftCorner } = location;
+    const { topLeftCorner, topRightCorner, bottomLeftCorner, bottomRightCorner } = location;
     const center = applyHomography(homography, centerOf(location));
     const topLeft = applyHomography(homography, topLeftCorner);
     const topRight = applyHomography(homography, topRightCorner);
     const bottomLeft = applyHomography(homography, bottomLeftCorner);
+    const bottomRight = applyHomography(homography, bottomRightCorner);
 
     const radius = Math.hypot(topLeft.x - center.x, topLeft.y - center.y) * 1.3 * 2;
 
@@ -310,7 +452,33 @@ function renderStage() {
     };
 
     drawPortal(portalImage, portalCenter, radius);
+
+    const name = CHARACTER_NAMES[data];
+    if (name) {
+      // Below the code's own bottom edge (opposite side from the portal,
+      // which floats above its top edge), so the two don't overlap.
+      const bottomEdgeMidX = (bottomLeft.x + bottomRight.x) / 2;
+      const bottomEdgeMidY = (bottomLeft.y + bottomRight.y) / 2;
+      const namePosition = {
+        x: bottomEdgeMidX - upX * 24,
+        y: bottomEdgeMidY - upY * 24,
+      };
+      drawCharacterName(name, namePosition);
+    }
   }
+}
+
+function drawCharacterName(name, position) {
+  stageCtx.save();
+  stageCtx.font = 'bold 22px monospace';
+  stageCtx.textAlign = 'center';
+  stageCtx.textBaseline = 'middle';
+  stageCtx.lineWidth = 5;
+  stageCtx.strokeStyle = '#000';
+  stageCtx.strokeText(name, position.x, position.y);
+  stageCtx.fillStyle = '#F5E2BA';
+  stageCtx.fillText(name, position.x, position.y);
+  stageCtx.restore();
 }
 
 // Sized bigger than the code itself so it shows through around its edges,
@@ -387,99 +555,53 @@ function solveLinearSystem(A, b) {
   return x;
 }
 
-function scanForQRCodes() {
-  const xs = getTilePositions(detectionCanvas.width);
-  const ys = getTilePositions(detectionCanvas.height);
-  const detections = [];
+// Decodes every QR code in the current frame in one call (zxing-wasm scans
+// the whole image natively, unlike jsQR which only ever returns a single
+// symbol per call and previously had to be run across a manual grid of
+// overlapping crops to find more than one code). Async and fire-and-forget;
+// see the detectionInFlight note above.
+const ZXING_READ_OPTIONS = { formats: ['QRCode'], tryHarder: false, maxNumberOfSymbols: 10 };
 
-  for (const y of ys) {
-    for (const x of xs) {
-      const tile = detectionCtx.getImageData(x, y, TILE_SIZE, TILE_SIZE);
-      const qrCode = jsQR(tile.data, TILE_SIZE, TILE_SIZE);
-      if (qrCode) {
-        detections.push(offsetQRCode(qrCode, x, y));
-      }
-    }
+async function scanForQRCodes() {
+  if (detectionInFlight) {
+    return;
   }
+  detectionInFlight = true;
 
-  // Dedupe in detection-canvas space (matching QR_SIZE's own scale), then
-  // convert to full-resolution camera-space coordinates so positions line
-  // up with the homography, which is built from full-resolution corner
-  // detections.
-  return dedupeDetections(detections).map(scaleUpToFullRes);
+  try {
+    detectionCtx.drawImage(video, 0, 0, detectionCanvas.width, detectionCanvas.height);
+    const frame = detectionCtx.getImageData(0, 0, detectionCanvas.width, detectionCanvas.height);
+    const results = await ZXingWASM.readBarcodes(frame, ZXING_READ_OPTIONS);
+
+    latestDetections = results.map(scaleUpToFullRes);
+    recordScanResult(latestDetections.length > 0);
+    updateTrackedTokens(latestDetections);
+    updateCharacterLands();
+  } catch (error) {
+    console.error('QR decode failed:', error);
+  } finally {
+    detectionInFlight = false;
+  }
 }
 
-function scaleUpToFullRes(qrCode) {
+// Converts a zxing-wasm result (text + 4-corner position, in
+// detection-canvas pixel space) into this app's internal detection shape,
+// scaled up to full-resolution camera-space coordinates so positions line
+// up with the homography, which is built from full-resolution corner
+// detections.
+function scaleUpToFullRes(result) {
   const scale = (point) => ({ x: point.x / detectionScale, y: point.y / detectionScale });
-  const { topLeftCorner, topRightCorner, bottomRightCorner, bottomLeftCorner } = qrCode.location;
+  const { topLeft, topRight, bottomRight, bottomLeft } = result.position;
 
   return {
-    data: qrCode.data,
+    data: result.text,
     location: {
-      topLeftCorner: scale(topLeftCorner),
-      topRightCorner: scale(topRightCorner),
-      bottomRightCorner: scale(bottomRightCorner),
-      bottomLeftCorner: scale(bottomLeftCorner),
+      topLeftCorner: scale(topLeft),
+      topRightCorner: scale(topRight),
+      bottomRightCorner: scale(bottomRight),
+      bottomLeftCorner: scale(bottomLeft),
     },
   };
-}
-
-// Start offsets for tiles of TILE_SIZE covering `dimension`, stepping by
-// TILE_STEP and with a final tile flush against the far edge so the whole
-// frame is covered even when it doesn't divide evenly by the step.
-function getTilePositions(dimension) {
-  if (dimension <= TILE_SIZE) {
-    return [0];
-  }
-
-  const positions = [];
-  for (let pos = 0; pos + TILE_SIZE <= dimension; pos += TILE_STEP) {
-    positions.push(pos);
-  }
-
-  const lastPosition = dimension - TILE_SIZE;
-  if (positions[positions.length - 1] !== lastPosition) {
-    positions.push(lastPosition);
-  }
-
-  return positions;
-}
-
-function offsetQRCode(qrCode, offsetX, offsetY) {
-  const shift = (point) => ({ x: point.x + offsetX, y: point.y + offsetY });
-  const { topLeftCorner, topRightCorner, bottomRightCorner, bottomLeftCorner } = qrCode.location;
-
-  return {
-    data: qrCode.data,
-    location: {
-      topLeftCorner: shift(topLeftCorner),
-      topRightCorner: shift(topRightCorner),
-      bottomRightCorner: shift(bottomRightCorner),
-      bottomLeftCorner: shift(bottomLeftCorner),
-    },
-  };
-}
-
-// The same QR code is often found in more than one overlapping tile, so
-// collapse detections whose bounding boxes are centered near each other.
-function dedupeDetections(detections) {
-  const unique = [];
-
-  for (const detection of detections) {
-    const center = centerOf(detection.location);
-    const isDuplicate = unique.some((existing) => {
-      const existingCenter = centerOf(existing.location);
-      const dx = center.x - existingCenter.x;
-      const dy = center.y - existingCenter.y;
-      return Math.sqrt(dx * dx + dy * dy) < QR_SIZE;
-    });
-
-    if (!isDuplicate) {
-      unique.push(detection);
-    }
-  }
-
-  return unique;
 }
 
 function centerOf(location) {
