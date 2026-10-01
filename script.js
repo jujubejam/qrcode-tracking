@@ -47,14 +47,32 @@ function speak(text) {
   speechSynthesis.speak(utterance);
 }
 
-// Reads a character's name aloud once, the moment its portal first
-// appears (not on every frame it stays visible — see the isNewSighting
-// check in updateTrackedTokens).
+// A brief detection flicker (the code drops out of trackedTokens for just
+// over TOKEN_PERSISTENCE_MS, then reappears) looks identical to a genuine
+// new appearance, which would otherwise re-announce repeatedly while the
+// token sits perfectly still — and since speechSynthesis queues every
+// speak() call, those pile up and keep playing for seconds after the token
+// is gone. This cooldown is independent of (and much longer than) the
+// visual persistence window, so flicker can't spam it; a real re-placement
+// of the token after being away for a while still announces again.
+const ANNOUNCE_COOLDOWN_MS = 8000;
+const lastAnnouncedAt = new Map();
+
+// Reads a character's name aloud when its portal first appears, subject to
+// the cooldown above (see the isNewSighting check in updateTrackedTokens).
 function announceCharacter(data) {
   const name = CHARACTER_NAMES[data];
-  if (name) {
-    speak(name);
+  if (!name) {
+    return;
   }
+
+  const now = performance.now();
+  if (now - (lastAnnouncedAt.get(data) ?? -Infinity) < ANNOUNCE_COOLDOWN_MS) {
+    return;
+  }
+  lastAnnouncedAt.set(data, now);
+
+  speak(name);
 }
 
 // Reads "<name> is <land>" aloud once, the moment a character's land
