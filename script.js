@@ -18,6 +18,34 @@ const PORTAL_IMAGES_BY_DATA = {
   'object-a': loadImage('portal_warm.png'),
 };
 
+// Human-readable names for the same recognized characters, used for the
+// on-screen nameplate, the spoken announcement, and the "X is Y" land
+// readout.
+const CHARACTER_NAMES = {
+  phone: '雨轩 yuxuan',
+  'object-a': 'JuJu',
+};
+
+function hasCJK(text) {
+  return /[一-鿿]/.test(text);
+}
+
+// Reads a character's name aloud once, the moment its portal first
+// appears (not on every frame it stays visible — see the isNewSighting
+// check in updateTrackedTokens).
+function announceCharacter(data) {
+  const name = CHARACTER_NAMES[data];
+  if (!name || !('speechSynthesis' in window)) {
+    return;
+  }
+
+  const utterance = new SpeechSynthesisUtterance(name);
+  if (hasCJK(name)) {
+    utterance.lang = 'zh-CN';
+  }
+  speechSynthesis.speak(utterance);
+}
+
 // readBarcodes() fetches and instantiates the wasm module lazily on its
 // first call, which would otherwise stall the very first real frame.
 // Kicking that off immediately on load means it's ready well before the
@@ -94,7 +122,12 @@ function updateTrackedTokens(detections) {
 
   for (const detection of detections) {
     const data = normalizeData(detection.data);
+    const isNewSighting = !trackedTokens.has(data);
     trackedTokens.set(data, { data, location: detection.location, lastSeen: now });
+
+    if (isNewSighting) {
+      announceCharacter(data);
+    }
   }
 
   for (const [data, token] of trackedTokens) {
@@ -143,7 +176,7 @@ for (const marker of CORNER_MARKERS) {
 // on screen — e.g. for someone to scan directly with a phone.
 const STATUS_MARKERS = [
   { element: document.getElementById('statusQR1'), data: 'doing great' },
-  { element: document.getElementById('statusQR2'), data: "it's alright" },
+  { element: document.getElementById('statusQR2'), data: 'alright' },
   { element: document.getElementById('statusQR3'), data: 'SOS' },
 ];
 
@@ -162,7 +195,7 @@ for (const marker of STATUS_MARKERS) {
 // one going missing.
 const LANDS = [
   { element: document.getElementById('landZone1'), name: 'doing great' },
-  { element: document.getElementById('landZone2'), name: "it's alright" },
+  { element: document.getElementById('landZone2'), name: 'alright' },
   { element: document.getElementById('landZone3'), name: 'SOS' },
 ];
 
@@ -197,7 +230,9 @@ function updateCharacterLands() {
   }
 
   characterLandsEl.textContent = characterLands.size
-    ? [...characterLands.entries()].map(([name, land]) => `${name}: ${land}`).join('  |  ')
+    ? [...characterLands.entries()]
+        .map(([data, land]) => `${CHARACTER_NAMES[data] || data} is ${land}`)
+        .join('  |  ')
     : '';
 }
 
@@ -349,11 +384,12 @@ function renderStage() {
       continue;
     }
 
-    const { topLeftCorner, topRightCorner, bottomLeftCorner } = location;
+    const { topLeftCorner, topRightCorner, bottomLeftCorner, bottomRightCorner } = location;
     const center = applyHomography(homography, centerOf(location));
     const topLeft = applyHomography(homography, topLeftCorner);
     const topRight = applyHomography(homography, topRightCorner);
     const bottomLeft = applyHomography(homography, bottomLeftCorner);
+    const bottomRight = applyHomography(homography, bottomRightCorner);
 
     const radius = Math.hypot(topLeft.x - center.x, topLeft.y - center.y) * 1.3 * 2;
 
@@ -374,7 +410,33 @@ function renderStage() {
     };
 
     drawPortal(portalImage, portalCenter, radius);
+
+    const name = CHARACTER_NAMES[data];
+    if (name) {
+      // Below the code's own bottom edge (opposite side from the portal,
+      // which floats above its top edge), so the two don't overlap.
+      const bottomEdgeMidX = (bottomLeft.x + bottomRight.x) / 2;
+      const bottomEdgeMidY = (bottomLeft.y + bottomRight.y) / 2;
+      const namePosition = {
+        x: bottomEdgeMidX - upX * 24,
+        y: bottomEdgeMidY - upY * 24,
+      };
+      drawCharacterName(name, namePosition);
+    }
   }
+}
+
+function drawCharacterName(name, position) {
+  stageCtx.save();
+  stageCtx.font = 'bold 22px monospace';
+  stageCtx.textAlign = 'center';
+  stageCtx.textBaseline = 'middle';
+  stageCtx.lineWidth = 5;
+  stageCtx.strokeStyle = '#000';
+  stageCtx.strokeText(name, position.x, position.y);
+  stageCtx.fillStyle = '#F5E2BA';
+  stageCtx.fillText(name, position.x, position.y);
+  stageCtx.restore();
 }
 
 // Sized bigger than the code itself so it shows through around its edges,
