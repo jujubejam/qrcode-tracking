@@ -119,6 +119,23 @@ for (const marker of CORNER_MARKERS) {
   marker.element.innerHTML = arDictionary.generateSVG(marker.id);
 }
 
+// Three static status QR codes placed on the display itself. Unlike the
+// corner markers (used for calibration) and tracked tokens (physical
+// objects placed on the surface), these are just fixed, labeled codes shown
+// on screen — e.g. for someone to scan directly with a phone.
+const STATUS_MARKERS = [
+  { element: document.getElementById('statusQR1'), data: 'doing great' },
+  { element: document.getElementById('statusQR2'), data: "it's alright" },
+  { element: document.getElementById('statusQR3'), data: 'SOS' },
+];
+
+for (const marker of STATUS_MARKERS) {
+  const qr = qrcode(0, 'L');
+  qr.addData(marker.data);
+  qr.make();
+  marker.element.innerHTML = qr.createSvgTag(4, 0);
+}
+
 function videoConstraints(deviceId) {
   return {
     video: {

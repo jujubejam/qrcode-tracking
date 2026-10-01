@@ -118,3 +118,46 @@ html, body {
   bottom: 16px;
   left: 16px;
 }
+
+/* Three static, labeled QR codes placed in the middle of the screen,
+   clear of the corner markers and debug text. */
+.status-marker {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 2;
+  text-align: center;
+}
+
+.status-marker-1 {
+  left: 25%;
+}
+
+.status-marker-2 {
+  left: 50%;
+}
+
+.status-marker-3 {
+  left: 75%;
+}
+
+.status-marker-qr {
+  width: 110px;
+  height: 110px;
+  margin: 0 auto;
+}
+
+.status-marker-qr svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.status-marker-label {
+  margin-top: 6px;
+  font: 14px monospace;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.6);
+  padding: 2px 6px;
+  display: inline-block;
+}
