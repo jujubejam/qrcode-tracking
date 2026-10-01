@@ -81,8 +81,8 @@ html, body {
 .corner-marker {
   position: absolute;
   z-index: 2;
-  width: 140px;
-  height: 140px;
+  width: 100px;
+  height: 100px;
   outline: 4px solid transparent;
   box-shadow: 0 0 0 transparent;
   transition: outline-color 0.1s, box-shadow 0.1s;
@@ -172,8 +172,8 @@ html, body {
   top: 50%;
   transform: translate(-50%, -50%);
   z-index: 2;
-  width: clamp(180px, 28vmin, 320px);
-  height: clamp(180px, 28vmin, 320px);
+  width: clamp(260px, 38vmin, 460px);
+  height: clamp(260px, 38vmin, 460px);
   border: 3px dashed rgba(245, 226, 186, 0.8);
   background: rgba(245, 226, 186, 0.08);
   box-sizing: border-box;

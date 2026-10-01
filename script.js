@@ -18,23 +18,34 @@ const PORTAL_IMAGES_BY_DATA = {
   'object-a': loadImage('portal_warm.png'),
 };
 
+// readBarcodes() fetches and instantiates the wasm module lazily on its
+// first call, which would otherwise stall the very first real frame.
+// Kicking that off immediately on load means it's ready well before the
+// camera stream and first video frame are.
+ZXingWASM.prepareZXingModule({ fireImmediately: true });
+
 let sampleCanvas;
 let sampleCtx;
 let tickLoopStarted = false;
 let latestDetections = [];
 
 // Token QR scanning runs on a downscaled copy of the frame rather than the
-// full capture resolution, since jsQR's cost scales with total pixels
-// examined. This lets us afford full tile overlap (see TILE_STEP below)
-// for reliability while still being faster overall than scanning the full
-// resolution without overlap. Corner-marker (ArUco) detection is unrelated
+// full capture resolution, purely to cut the number of pixels zxing-wasm
+// has to examine per frame. Corner-marker (ArUco) detection is unrelated
 // and still runs on the full-resolution frame, unchanged.
 const DETECTION_MAX_WIDTH = 1280;
 let detectionCanvas;
 let detectionCtx;
 let detectionScale = 1;
 
-// Rolling once-a-second readout of how often jsQR actually decodes
+// readBarcodes() is async and, per frame, meaningfully slower than a
+// synchronous call — awaiting it inline in the render loop would stall
+// rendering. Instead it's kicked off without blocking tick(), and this
+// flag stops a new scan from starting while one is still in flight (so a
+// slow frame can't pile up a backlog of overlapping scans).
+let detectionInFlight = false;
+
+// Rolling once-a-second readout of how often a scan actually decodes
 // something, to distinguish "detection is genuinely unreliable right now"
 // from other causes of a missing portal.
 let scansThisWindow = 0;
@@ -57,7 +68,7 @@ function recordScanResult(succeeded) {
   }
 }
 
-// jsQR data is matched exactly, so incidental whitespace or casing from
+// Decoded data is matched exactly, so incidental whitespace or casing from
 // however a code was generated (e.g. "Phone " vs "phone") would otherwise
 // silently fail to match anything in PORTAL_IMAGES_BY_DATA.
 function normalizeData(data) {
@@ -238,20 +249,6 @@ function resizeStage() {
 window.addEventListener('resize', resizeStage);
 resizeStage();
 
-// Approximate size of a QR code in the captured frame, in pixels, at a
-// 1920-wide capture. Scaled down to match the actual detection resolution
-// once it's known (see loadedmetadata below).
-const QR_SIZE_AT_FULL_RES = 150;
-// jsQR only ever returns one decoded symbol per call, so to find multiple
-// codes in a frame we scan overlapping crop windows across the image and
-// decode each one separately. The window is bigger than a code (with room
-// for its quiet zone) and the step is small enough that the overlap between
-// adjacent windows is at least one code-width, so no code can fall entirely
-// across a window boundary and get missed.
-let QR_SIZE;
-let TILE_SIZE;
-let TILE_STEP;
-
 video.addEventListener('loadedmetadata', () => {
   sampleCanvas = document.createElement('canvas');
   sampleCanvas.width = video.videoWidth;
@@ -263,10 +260,6 @@ video.addEventListener('loadedmetadata', () => {
   detectionCanvas.width = Math.round(video.videoWidth * detectionScale);
   detectionCanvas.height = Math.round(video.videoHeight * detectionScale);
   detectionCtx = detectionCanvas.getContext('2d', { willReadFrequently: true });
-
-  QR_SIZE = Math.round(QR_SIZE_AT_FULL_RES * detectionScale);
-  TILE_SIZE = QR_SIZE * 2;
-  TILE_STEP = QR_SIZE;
 
   if (!tickLoopStarted) {
     tickLoopStarted = true;
@@ -280,11 +273,10 @@ function tick() {
     const frame = sampleCtx.getImageData(0, 0, sampleCanvas.width, sampleCanvas.height);
     updateHomography(frame);
 
-    detectionCtx.drawImage(video, 0, 0, detectionCanvas.width, detectionCanvas.height);
-    latestDetections = scanForQRCodes();
-    recordScanResult(latestDetections.length > 0);
-    updateTrackedTokens(latestDetections);
-    updateCharacterLands();
+    // Fire-and-forget: scanForQRCodes() is async, and this loop shouldn't
+    // stall waiting on it. Rendering (below) always uses whatever the most
+    // recently completed scan found.
+    scanForQRCodes();
 
     renderStage();
   }
@@ -452,99 +444,53 @@ function solveLinearSystem(A, b) {
   return x;
 }
 
-function scanForQRCodes() {
-  const xs = getTilePositions(detectionCanvas.width);
-  const ys = getTilePositions(detectionCanvas.height);
-  const detections = [];
+// Decodes every QR code in the current frame in one call (zxing-wasm scans
+// the whole image natively, unlike jsQR which only ever returns a single
+// symbol per call and previously had to be run across a manual grid of
+// overlapping crops to find more than one code). Async and fire-and-forget;
+// see the detectionInFlight note above.
+const ZXING_READ_OPTIONS = { formats: ['QRCode'], tryHarder: false, maxNumberOfSymbols: 10 };
 
-  for (const y of ys) {
-    for (const x of xs) {
-      const tile = detectionCtx.getImageData(x, y, TILE_SIZE, TILE_SIZE);
-      const qrCode = jsQR(tile.data, TILE_SIZE, TILE_SIZE);
-      if (qrCode) {
-        detections.push(offsetQRCode(qrCode, x, y));
-      }
-    }
+async function scanForQRCodes() {
+  if (detectionInFlight) {
+    return;
   }
+  detectionInFlight = true;
 
-  // Dedupe in detection-canvas space (matching QR_SIZE's own scale), then
-  // convert to full-resolution camera-space coordinates so positions line
-  // up with the homography, which is built from full-resolution corner
-  // detections.
-  return dedupeDetections(detections).map(scaleUpToFullRes);
+  try {
+    detectionCtx.drawImage(video, 0, 0, detectionCanvas.width, detectionCanvas.height);
+    const frame = detectionCtx.getImageData(0, 0, detectionCanvas.width, detectionCanvas.height);
+    const results = await ZXingWASM.readBarcodes(frame, ZXING_READ_OPTIONS);
+
+    latestDetections = results.map(scaleUpToFullRes);
+    recordScanResult(latestDetections.length > 0);
+    updateTrackedTokens(latestDetections);
+    updateCharacterLands();
+  } catch (error) {
+    console.error('QR decode failed:', error);
+  } finally {
+    detectionInFlight = false;
+  }
 }
 
-function scaleUpToFullRes(qrCode) {
+// Converts a zxing-wasm result (text + 4-corner position, in
+// detection-canvas pixel space) into this app's internal detection shape,
+// scaled up to full-resolution camera-space coordinates so positions line
+// up with the homography, which is built from full-resolution corner
+// detections.
+function scaleUpToFullRes(result) {
   const scale = (point) => ({ x: point.x / detectionScale, y: point.y / detectionScale });
-  const { topLeftCorner, topRightCorner, bottomRightCorner, bottomLeftCorner } = qrCode.location;
+  const { topLeft, topRight, bottomRight, bottomLeft } = result.position;
 
   return {
-    data: qrCode.data,
+    data: result.text,
     location: {
-      topLeftCorner: scale(topLeftCorner),
-      topRightCorner: scale(topRightCorner),
-      bottomRightCorner: scale(bottomRightCorner),
-      bottomLeftCorner: scale(bottomLeftCorner),
+      topLeftCorner: scale(topLeft),
+      topRightCorner: scale(topRight),
+      bottomRightCorner: scale(bottomRight),
+      bottomLeftCorner: scale(bottomLeft),
     },
   };
-}
-
-// Start offsets for tiles of TILE_SIZE covering `dimension`, stepping by
-// TILE_STEP and with a final tile flush against the far edge so the whole
-// frame is covered even when it doesn't divide evenly by the step.
-function getTilePositions(dimension) {
-  if (dimension <= TILE_SIZE) {
-    return [0];
-  }
-
-  const positions = [];
-  for (let pos = 0; pos + TILE_SIZE <= dimension; pos += TILE_STEP) {
-    positions.push(pos);
-  }
-
-  const lastPosition = dimension - TILE_SIZE;
-  if (positions[positions.length - 1] !== lastPosition) {
-    positions.push(lastPosition);
-  }
-
-  return positions;
-}
-
-function offsetQRCode(qrCode, offsetX, offsetY) {
-  const shift = (point) => ({ x: point.x + offsetX, y: point.y + offsetY });
-  const { topLeftCorner, topRightCorner, bottomRightCorner, bottomLeftCorner } = qrCode.location;
-
-  return {
-    data: qrCode.data,
-    location: {
-      topLeftCorner: shift(topLeftCorner),
-      topRightCorner: shift(topRightCorner),
-      bottomRightCorner: shift(bottomRightCorner),
-      bottomLeftCorner: shift(bottomLeftCorner),
-    },
-  };
-}
-
-// The same QR code is often found in more than one overlapping tile, so
-// collapse detections whose bounding boxes are centered near each other.
-function dedupeDetections(detections) {
-  const unique = [];
-
-  for (const detection of detections) {
-    const center = centerOf(detection.location);
-    const isDuplicate = unique.some((existing) => {
-      const existingCenter = centerOf(existing.location);
-      const dx = center.x - existingCenter.x;
-      const dy = center.y - existingCenter.y;
-      return Math.sqrt(dx * dx + dy * dy) < QR_SIZE;
-    });
-
-    if (!isDuplicate) {
-      unique.push(detection);
-    }
-  }
-
-  return unique;
 }
 
 function centerOf(location) {
