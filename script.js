@@ -21,8 +21,15 @@ const PORTAL_IMAGES_BY_DATA = {
 // readBarcodes() fetches and instantiates the wasm module lazily on its
 // first call, which would otherwise stall the very first real frame.
 // Kicking that off immediately on load means it's ready well before the
-// camera stream and first video frame are.
-ZXingWASM.prepareZXingModule({ fireImmediately: true });
+// camera stream and first video frame are. Wrapped defensively: if this
+// library fails to load or init for any reason, that must never be able to
+// block camera access (an unrelated, more important concern) by throwing
+// an uncaught error here.
+try {
+  ZXingWASM.prepareZXingModule({ fireImmediately: true });
+} catch (error) {
+  console.error('Failed to initialize zxing-wasm:', error);
+}
 
 let sampleCanvas;
 let sampleCtx;
