@@ -22,7 +22,7 @@ const PORTAL_IMAGES_BY_DATA = {
 // on-screen nameplate, the spoken announcement, and the "X is Y" land
 // readout.
 const CHARACTER_NAMES = {
-  phone: '雨轩 yuxuan',
+  phone: '雨轩',
   'object-a': 'JuJu',
 };
 
@@ -30,20 +30,43 @@ function hasCJK(text) {
   return /[一-鿿]/.test(text);
 }
 
+// Speaks one utterance, auto-detecting a Chinese voice for CJK text so it's
+// pronounced correctly rather than mangled by an English voice. Consecutive
+// speak() calls are queued by the browser and play back-to-back, which is
+// used to mix a CJK name with an English phrase in a single announcement
+// (see announceLand) without either part being read in the wrong voice.
+function speak(text) {
+  if (!('speechSynthesis' in window)) {
+    return;
+  }
+
+  const utterance = new SpeechSynthesisUtterance(text);
+  if (hasCJK(text)) {
+    utterance.lang = 'zh-CN';
+  }
+  speechSynthesis.speak(utterance);
+}
+
 // Reads a character's name aloud once, the moment its portal first
 // appears (not on every frame it stays visible — see the isNewSighting
 // check in updateTrackedTokens).
 function announceCharacter(data) {
   const name = CHARACTER_NAMES[data];
-  if (!name || !('speechSynthesis' in window)) {
-    return;
+  if (name) {
+    speak(name);
   }
+}
 
-  const utterance = new SpeechSynthesisUtterance(name);
-  if (hasCJK(name)) {
-    utterance.lang = 'zh-CN';
+// Reads "<name> is <land>" aloud once, the moment a character's land
+// assignment is first set or changes (see updateCharacterLands) — not on
+// every frame it stays on the same land. Split into two utterances so a
+// CJK name and the English land phrase are each spoken in the right voice.
+function announceLand(data, land) {
+  const name = CHARACTER_NAMES[data];
+  if (name) {
+    speak(name);
+    speak(`is ${land}`);
   }
-  speechSynthesis.speak(utterance);
 }
 
 // readBarcodes() fetches and instantiates the wasm module lazily on its
@@ -224,8 +247,9 @@ function updateCharacterLands() {
     }
 
     const land = landContaining(applyHomography(homography, centerOf(location)));
-    if (land) {
+    if (land && characterLands.get(data) !== land) {
       characterLands.set(data, land);
+      announceLand(data, land);
     }
   }
 
