@@ -20,10 +20,11 @@ const PORTAL_IMAGES_BY_DATA = {
 
 // Human-readable names for the same recognized characters, used for the
 // on-screen nameplate, the spoken announcement, and the "X is Y" land
-// readout.
+// readout. Key order matters: it's the order names appear in when several
+// characters share a land ("JuJu and 雨轩 are doing great").
 const CHARACTER_NAMES = {
-  phone: '雨轩',
   'object-a': 'JuJu',
+  phone: '雨轩',
 };
 
 function hasCJK(text) {
@@ -47,32 +48,40 @@ function speak(text) {
   speechSynthesis.speak(utterance);
 }
 
-// A brief detection flicker (the code drops out of trackedTokens for just
-// over TOKEN_PERSISTENCE_MS, then reappears) looks identical to a genuine
-// new appearance, which would otherwise re-announce repeatedly while the
-// token sits perfectly still — and since speechSynthesis queues every
-// speak() call, those pile up and keep playing for seconds after the token
-// is gone. This cooldown is independent of (and much longer than) the
-// visual persistence window, so flicker can't spam it; a real re-placement
-// of the token after being away for a while still announces again.
-const ANNOUNCE_COOLDOWN_MS = 8000;
-const lastAnnouncedAt = new Map();
+// Speaks a sentence assembled from separate parts, merging neighbors of the
+// same script into one utterance so e.g. ["JuJu", "and", "雨轩", "are doing
+// great"] becomes "JuJu and" (English) -> "雨轩" (Chinese) -> "are doing
+// great" (English), each in the right voice with as few pauses as possible.
+function speakParts(parts) {
+  const groups = [];
+  for (const part of parts) {
+    const cjk = hasCJK(part);
+    const last = groups[groups.length - 1];
+    if (last && last.cjk === cjk) {
+      last.text += ` ${part}`;
+    } else {
+      groups.push({ text: part, cjk });
+    }
+  }
+  groups.forEach((group) => speak(group.text));
+}
 
-// Reads a character's name aloud when its portal first appears, subject to
-// the cooldown above (see the isNewSighting check in updateTrackedTokens).
+// A character only counts as having re-entered the screen if it was gone
+// for at least this long. A brief detection flicker (the code drops out of
+// trackedTokens for just over TOKEN_PERSISTENCE_MS, then reappears) looks
+// identical to a new appearance, and re-announcing on every one of those
+// piles up in speechSynthesis's queue and keeps playing for seconds after
+// the token is gone — so only a real absence triggers the name again.
+const REENTRY_ABSENCE_MS = 3000;
+const lastSeenAt = new Map();
+
+// Reads a character's name aloud when its portal first appears (see the
+// isNewSighting check in updateTrackedTokens).
 function announceCharacter(data) {
   const name = CHARACTER_NAMES[data];
-  if (!name) {
-    return;
+  if (name) {
+    speak(name);
   }
-
-  const now = performance.now();
-  if (now - (lastAnnouncedAt.get(data) ?? -Infinity) < ANNOUNCE_COOLDOWN_MS) {
-    return;
-  }
-  lastAnnouncedAt.set(data, now);
-
-  speak(name);
 }
 
 // Reads "<name> is <land>" aloud once, the moment a character's land
@@ -164,9 +173,11 @@ function updateTrackedTokens(detections) {
   for (const detection of detections) {
     const data = normalizeData(detection.data);
     const isNewSighting = !trackedTokens.has(data);
+    const absentMs = now - (lastSeenAt.get(data) ?? -Infinity);
     trackedTokens.set(data, { data, location: detection.location, lastSeen: now });
+    lastSeenAt.set(data, now);
 
-    if (isNewSighting) {
+    if (isNewSighting && absentMs >= REENTRY_ABSENCE_MS) {
       announceCharacter(data);
     }
   }
@@ -361,6 +372,7 @@ function tick() {
     // stall waiting on it. Rendering (below) always uses whatever the most
     // recently completed scan found.
     scanForQRCodes();
+    detectPointing();
 
     renderStage();
   }
@@ -465,6 +477,10 @@ function renderStage() {
       };
       drawCharacterName(name, namePosition);
     }
+  }
+
+  if (fingertip && performance.now() - fingertip.seenAt < POINT_GRACE_MS) {
+    drawFingertip(fingertip);
   }
 }
 
@@ -611,3 +627,211 @@ function centerOf(location) {
     y: (topLeftCorner.y + bottomRightCorner.y) / 2,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Hand pointing: pointing at a land with an index finger announces who is in
+// it, e.g. "JuJu is doing great", "no one is doing great", "JuJu and 雨轩 are
+// doing great".
+// ---------------------------------------------------------------------------
+
+const MEDIAPIPE_VERSION = '1.1.0';
+const HAND_MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
+
+// Hand detection is comparatively expensive, so it runs a few times a
+// second rather than on every frame.
+const HAND_DETECT_INTERVAL_MS = 80;
+// The fingertip has to stay on one land this long before it counts as
+// pointing at it, so a hand sweeping across the display doesn't announce
+// every land it passes over. A brief dropout (a missed frame) doesn't reset
+// the timer.
+const POINT_HOLD_MS = 700;
+const POINT_GRACE_MS = 350;
+const POINT_ANSWER_DISPLAY_MS = 6000;
+
+const handStatusEl = document.getElementById('handStatus');
+const pointingAnswerEl = document.getElementById('pointingAnswer');
+
+let handLandmarker = null;
+let lastHandDetectAt = 0;
+let fingertip = null;
+let pointState = null;
+let pointingAnswerTimer = null;
+
+// MediaPipe hand landmark indices: the wrist is 0, and each finger is
+// [knuckle, middle joint (pip), tip].
+const INDEX_FINGER = [5, 6, 8];
+const OTHER_FINGERS = [[9, 10, 12], [13, 14, 16], [17, 18, 20]];
+const INDEX_TIP = 8;
+
+// A finger counts as extended when its tip is clearly farther from the wrist
+// than its middle joint is, and curled when the tip has folded back closer.
+// Comparing distances from the wrist (rather than looking at up/down) makes
+// this work however the hand is rotated, e.g. seen from above.
+const EXTENDED_RATIO = 1.1;
+const CURLED_RATIO = 0.9;
+
+function fingerReach(points, finger) {
+  const [, pip, tip] = finger;
+  const wrist = points[0];
+  const dist = (i) => Math.hypot(points[i].x - wrist.x, points[i].y - wrist.y);
+  return dist(tip) / dist(pip);
+}
+
+// `points` are the 21 hand landmarks in pixel space. Pointing means the
+// index finger is out while the middle finger is folded away and at least
+// one of the ring/pinky is too (which rules out an open hand, a peace sign
+// and a raised middle finger).
+function isPointingGesture(points) {
+  if (fingerReach(points, INDEX_FINGER) < EXTENDED_RATIO) {
+    return false;
+  }
+
+  const [middle, ...ringAndPinky] = OTHER_FINGERS.map((finger) => fingerReach(points, finger));
+  return middle < CURLED_RATIO && ringAndPinky.some((reach) => reach < CURLED_RATIO);
+}
+
+// Characters whose remembered land is `land`, in CHARACTER_NAMES order.
+function namesInLand(land) {
+  return Object.keys(CHARACTER_NAMES)
+    .filter((data) => characterLands.get(data) === land)
+    .map((data) => CHARACTER_NAMES[data]);
+}
+
+// The answer to "who is in this land?" as separate parts, so it can be shown
+// as text and spoken with each part in the right voice (see speakParts).
+function whoIsInParts(land) {
+  const names = namesInLand(land);
+  if (names.length === 0) {
+    return ['no one', 'is', land];
+  }
+
+  const parts = [];
+  names.forEach((name, i) => {
+    if (i > 0) {
+      parts.push('and');
+    }
+    parts.push(name);
+  });
+  parts.push(names.length === 1 ? 'is' : 'are', land);
+  return parts;
+}
+
+function announceWhoIsIn(land) {
+  const parts = whoIsInParts(land);
+
+  pointingAnswerEl.textContent = parts.join(' ');
+  clearTimeout(pointingAnswerTimer);
+  pointingAnswerTimer = setTimeout(() => {
+    pointingAnswerEl.textContent = '';
+  }, POINT_ANSWER_DISPLAY_MS);
+
+  speakParts(parts);
+}
+
+// Tracks which land is being pointed at and announces it once the fingertip
+// has rested there for POINT_HOLD_MS. Pointing at a land again (after
+// moving away from it, or to another land) announces again.
+function updatePointState(land, now) {
+  if (land) {
+    if (!pointState || pointState.land !== land) {
+      pointState = { land, since: now, lastSeen: now, announced: false };
+    } else {
+      pointState.lastSeen = now;
+    }
+
+    if (!pointState.announced && now - pointState.since >= POINT_HOLD_MS) {
+      pointState.announced = true;
+      announceWhoIsIn(land);
+    }
+  } else if (pointState && now - pointState.lastSeen > POINT_GRACE_MS) {
+    pointState = null;
+  }
+
+  const active = pointState ? pointState.land : null;
+  for (const l of LANDS) {
+    l.element.classList.toggle('pointed', l.name === active);
+  }
+}
+
+function detectPointing() {
+  if (!handLandmarker || !homography) {
+    return;
+  }
+
+  const now = performance.now();
+  if (now - lastHandDetectAt < HAND_DETECT_INTERVAL_MS) {
+    return;
+  }
+  lastHandDetectAt = now;
+
+  try {
+    const landmarks = handLandmarker.detectForVideo(video, now).landmarks[0];
+    let tip = null;
+    let status = 'none';
+
+    if (landmarks) {
+      // Landmarks are normalized to the frame; scale to the same full-
+      // resolution camera space the homography was built in.
+      const points = landmarks.map((p) => ({ x: p.x * video.videoWidth, y: p.y * video.videoHeight }));
+      status = 'seen (not pointing)';
+
+      if (isPointingGesture(points)) {
+        tip = applyHomography(homography, points[INDEX_TIP]);
+        fingertip = { ...tip, seenAt: now };
+      }
+    }
+
+    const land = tip ? landContaining(tip) : null;
+    updatePointState(land, now);
+
+    if (tip) {
+      status = `pointing at ${land || 'no land'}`;
+    }
+    handStatusEl.textContent = `Hand: ${status}`;
+  } catch (error) {
+    console.error('Hand detection failed:', error);
+    handStatusEl.textContent = 'Hand: unavailable';
+    handLandmarker = null;
+  }
+}
+
+function drawFingertip(point) {
+  stageCtx.save();
+  stageCtx.beginPath();
+  stageCtx.arc(point.x, point.y, 14, 0, Math.PI * 2);
+  stageCtx.fillStyle = '#F5E2BA';
+  stageCtx.fill();
+  stageCtx.lineWidth = 4;
+  stageCtx.strokeStyle = '#000';
+  stageCtx.stroke();
+  stageCtx.restore();
+}
+
+// MediaPipe is loaded on demand (it's an ES module, and not needed until a
+// hand is in view). Failing to load it must never affect the camera or
+// token tracking, so any error is just reported in the status line.
+async function initHandLandmarker() {
+  handStatusEl.textContent = 'Hand: loading…';
+
+  const base = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MEDIAPIPE_VERSION}`;
+  const { FilesetResolver, HandLandmarker } = await import(`${base}/vision_bundle.mjs`);
+  const fileset = await FilesetResolver.forVisionTasks(`${base}/wasm`);
+
+  const create = (delegate) => HandLandmarker.createFromOptions(fileset, {
+    baseOptions: { modelAssetPath: HAND_MODEL_URL, delegate },
+    runningMode: 'VIDEO',
+    numHands: 1,
+  });
+
+  try {
+    handLandmarker = await create('GPU');
+  } catch (gpuError) {
+    handLandmarker = await create('CPU');
+  }
+  handStatusEl.textContent = 'Hand: ready';
+}
+
+initHandLandmarker().catch((error) => {
+  console.error('Hand detection unavailable:', error);
+  handStatusEl.textContent = 'Hand: unavailable';
+});

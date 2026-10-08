@@ -41,10 +41,13 @@ html, body {
   color: #ffee00;
 }
 
+/* The three debug readouts below sit to the right of the bottom-left corner
+   marker (16px margin + 100px marker + 16px gap) so they never draw over
+   it: text on top of a marker can stop it being detected. */
 #detectedCodes {
   position: absolute;
   bottom: 36px;
-  left: 16px;
+  left: 132px;
   z-index: 2;
   margin: 0;
   font: 14px monospace;
@@ -55,7 +58,7 @@ html, body {
 #detectionRate {
   position: absolute;
   bottom: 16px;
-  left: 16px;
+  left: 132px;
   z-index: 2;
   margin: 0;
   font: 14px monospace;
@@ -179,6 +182,12 @@ html, body {
   box-sizing: border-box;
 }
 
+/* The land a pointing finger has rested on long enough to count. */
+.land-zone.pointed {
+  border-color: #fff;
+  background: rgba(245, 226, 186, 0.28);
+}
+
 .land-zone-1 {
   left: 12%;
 }
@@ -203,4 +212,27 @@ html, body {
   background: rgba(0, 0, 0, 0.6);
   padding: 4px 10px;
   white-space: nowrap;
+}
+
+#pointingAnswer {
+  position: absolute;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 3;
+  margin: 0;
+  font: bold 24px monospace;
+  color: #F5E2BA;
+  text-shadow: 0 0 6px #000, 0 0 6px #000;
+  white-space: nowrap;
+}
+
+#handStatus {
+  position: absolute;
+  bottom: 56px;
+  left: 132px;
+  z-index: 2;
+  margin: 0;
+  font: 14px monospace;
+  color: #ffb3d9;
 }
