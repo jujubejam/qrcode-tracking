@@ -66,14 +66,20 @@ function speakParts(parts) {
   groups.forEach((group) => speak(group.text));
 }
 
-// A character only counts as having re-entered the screen if it was gone
-// for at least this long. A brief detection flicker (the code drops out of
-// trackedTokens for just over TOKEN_PERSISTENCE_MS, then reappears) looks
-// identical to a new appearance, and re-announcing on every one of those
-// piles up in speechSynthesis's queue and keeps playing for seconds after
-// the token is gone — so only a real absence triggers the name again.
-const REENTRY_ABSENCE_MS = 3000;
+// A character counts as having left the screen once it hasn't been seen for
+// this long. That's longer than any brief detection flicker (the code
+// dropping out of trackedTokens for just over TOKEN_PERSISTENCE_MS, then
+// reappearing), which would otherwise look identical to leaving and coming
+// back. It has two consequences: a character that comes back after this long
+// is announced by name again (re-announcing on every flicker piles up in
+// speechSynthesis's queue and keeps playing after the token is gone), and a
+// character that's been gone this long is no longer "in" any land.
+const LEFT_SCREEN_AFTER_MS = 3000;
 const lastSeenAt = new Map();
+
+function isOnScreen(data, now = performance.now()) {
+  return now - (lastSeenAt.get(data) ?? -Infinity) < LEFT_SCREEN_AFTER_MS;
+}
 
 // Reads a character's name aloud when its portal first appears (see the
 // isNewSighting check in updateTrackedTokens).
@@ -177,7 +183,7 @@ function updateTrackedTokens(detections) {
     trackedTokens.set(data, { data, location: detection.location, lastSeen: now });
     lastSeenAt.set(data, now);
 
-    if (isNewSighting && absentMs >= REENTRY_ABSENCE_MS) {
+    if (isNewSighting && absentMs >= LEFT_SCREEN_AFTER_MS) {
       announceCharacter(data);
     }
   }
@@ -241,10 +247,11 @@ for (const marker of STATUS_MARKERS) {
 
 // Each status marker has a square "land" around it (the dashed box drawn in
 // CSS). A recognized character (a token with a portal image) standing in
-// one is considered "on" that land. The assignment is remembered even
-// after the character is no longer in view, so it can still be asked about
-// later; it's only ever overwritten by a fresh sighting, never cleared by
-// one going missing.
+// one is considered "on" that land. characterLands remembers the last land
+// each character was seen on, which is what lets a land change be told apart
+// from just moving around within (or outside of) one. Whether a character is
+// actually *in* its remembered land right now also requires it to still be
+// on screen (see isOnScreen).
 const LANDS = [
   { element: document.getElementById('landZone1'), name: 'doing great' },
   { element: document.getElementById('landZone2'), name: 'alright' },
@@ -282,11 +289,11 @@ function updateCharacterLands() {
     }
   }
 
-  characterLandsEl.textContent = characterLands.size
-    ? [...characterLands.entries()]
-        .map(([data, land]) => `${CHARACTER_NAMES[data] || data} is ${land}`)
-        .join('  |  ')
-    : '';
+  const now = performance.now();
+  characterLandsEl.textContent = [...characterLands.entries()]
+    .filter(([data]) => isOnScreen(data, now))
+    .map(([data, land]) => `${CHARACTER_NAMES[data] || data} is ${land}`)
+    .join('  |  ');
 }
 
 function videoConstraints(deviceId) {
@@ -690,10 +697,12 @@ function isPointingGesture(points) {
   return middle < CURLED_RATIO && ringAndPinky.some((reach) => reach < CURLED_RATIO);
 }
 
-// Characters whose remembered land is `land`, in CHARACTER_NAMES order.
+// Characters currently in `land` (remembered there and still on screen), in
+// CHARACTER_NAMES order.
 function namesInLand(land) {
+  const now = performance.now();
   return Object.keys(CHARACTER_NAMES)
-    .filter((data) => characterLands.get(data) === land)
+    .filter((data) => characterLands.get(data) === land && isOnScreen(data, now))
     .map((data) => CHARACTER_NAMES[data]);
 }
 
