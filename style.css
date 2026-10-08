@@ -41,10 +41,13 @@ html, body {
   color: #ffee00;
 }
 
+/* The three debug readouts below sit to the right of the bottom-left corner
+   marker (16px margin + 100px marker + 16px gap) so they never draw over
+   it: text on top of a marker can stop it being detected. */
 #detectedCodes {
   position: absolute;
   bottom: 36px;
-  left: 16px;
+  left: 132px;
   z-index: 2;
   margin: 0;
   font: 14px monospace;
@@ -55,7 +58,7 @@ html, body {
 #detectionRate {
   position: absolute;
   bottom: 16px;
-  left: 16px;
+  left: 132px;
   z-index: 2;
   margin: 0;
   font: 14px monospace;
@@ -227,7 +230,7 @@ html, body {
 #handStatus {
   position: absolute;
   bottom: 56px;
-  left: 16px;
+  left: 132px;
   z-index: 2;
   margin: 0;
   font: 14px monospace;
