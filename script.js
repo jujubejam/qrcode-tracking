@@ -66,20 +66,17 @@ function speakParts(parts) {
   groups.forEach((group) => speak(group.text));
 }
 
-// A character counts as having left the screen once it hasn't been seen for
-// this long. That's longer than any brief detection flicker (the code
-// dropping out of trackedTokens for just over TOKEN_PERSISTENCE_MS, then
-// reappearing), which would otherwise look identical to leaving and coming
-// back. It has two consequences: a character that comes back after this long
+// A character counts as having left the camera's view once it hasn't been
+// seen for this long. That's longer than any brief detection flicker (the
+// code dropping out of trackedTokens for just over TOKEN_PERSISTENCE_MS,
+// then reappearing), which would otherwise look identical to leaving and
+// coming back. Two consequences: a character that comes back after this long
 // is announced by name again (re-announcing on every flicker piles up in
 // speechSynthesis's queue and keeps playing after the token is gone), and a
-// character that's been gone this long is no longer "in" any land.
+// character gone this long is no longer in any land (see
+// updateCharacterLands).
 const LEFT_SCREEN_AFTER_MS = 3000;
 const lastSeenAt = new Map();
-
-function isOnScreen(data, now = performance.now()) {
-  return now - (lastSeenAt.get(data) ?? -Infinity) < LEFT_SCREEN_AFTER_MS;
-}
 
 // Reads a character's name aloud when its portal first appears (see the
 // isNewSighting check in updateTrackedTokens).
@@ -247,11 +244,13 @@ for (const marker of STATUS_MARKERS) {
 
 // Each status marker has a square "land" around it (the dashed box drawn in
 // CSS). A recognized character (a token with a portal image) standing in
-// one is considered "on" that land. characterLands remembers the last land
-// each character was seen on, which is what lets a land change be told apart
-// from just moving around within (or outside of) one. Whether a character is
-// actually *in* its remembered land right now also requires it to still be
-// on screen (see isOnScreen).
+// one is considered "on" that land.
+//
+// characterLands holds each character's *current* land: the land it's
+// standing in, or null when it isn't in any — whether it's been moved
+// outside every land (but is still visible to the camera) or taken out of
+// view altogether. Announcements and "who is in this land?" are both driven
+// by it, so a character that's left a land is never reported as still in it.
 const LANDS = [
   { element: document.getElementById('landZone1'), name: 'doing great' },
   { element: document.getElementById('landZone2'), name: 'alright' },
@@ -276,23 +275,46 @@ function landContaining(point) {
   return null;
 }
 
-function updateCharacterLands() {
-  for (const { data, location } of trackedTokens.values()) {
-    if (!PORTAL_IMAGES_BY_DATA[data] || !homography) {
-      continue;
-    }
+// Moving out of a land has to last this long before the character counts as
+// out of it, so a token resting near a land's edge, jittering back and forth
+// across it, doesn't keep leaving and re-entering (and re-announcing).
+const OUTSIDE_LAND_AFTER_MS = 800;
+const lastInLandAt = new Map();
 
-    const land = landContaining(applyHomography(homography, centerOf(location)));
-    if (land && characterLands.get(data) !== land) {
-      characterLands.set(data, land);
-      announceLand(data, land);
+// Re-evaluates every character's land from where it was last seen:
+//  - Inside a land: that's its land. Announced when it changes (including
+//    entering a land from outside, or from out of view).
+//  - Visible but outside every land: no land, once it's stayed out for
+//    OUTSIDE_LAND_AFTER_MS.
+//  - Not visible at all: no land, once it's been gone LEFT_SCREEN_AFTER_MS.
+// Ending up in no land is silent; the sentence is only for arriving somewhere.
+function updateCharacterLands() {
+  const now = performance.now();
+
+  for (const data of Object.keys(CHARACTER_NAMES)) {
+    const token = trackedTokens.get(data);
+    const land = token && homography
+      ? landContaining(applyHomography(homography, centerOf(token.location)))
+      : null;
+    const current = characterLands.get(data) ?? null;
+
+    if (land) {
+      lastInLandAt.set(data, now);
+      if (land !== current) {
+        characterLands.set(data, land);
+        announceLand(data, land);
+      }
+    } else if (current) {
+      const graceMs = token ? OUTSIDE_LAND_AFTER_MS : LEFT_SCREEN_AFTER_MS;
+      if (now - lastInLandAt.get(data) >= graceMs) {
+        characterLands.set(data, null);
+      }
     }
   }
 
-  const now = performance.now();
   characterLandsEl.textContent = [...characterLands.entries()]
-    .filter(([data]) => isOnScreen(data, now))
-    .map(([data, land]) => `${CHARACTER_NAMES[data] || data} is ${land}`)
+    .filter(([, land]) => land)
+    .map(([data, land]) => `${CHARACTER_NAMES[data]} is ${land}`)
     .join('  |  ');
 }
 
@@ -697,12 +719,10 @@ function isPointingGesture(points) {
   return middle < CURLED_RATIO && ringAndPinky.some((reach) => reach < CURLED_RATIO);
 }
 
-// Characters currently in `land` (remembered there and still on screen), in
-// CHARACTER_NAMES order.
+// Characters currently in `land`, in CHARACTER_NAMES order.
 function namesInLand(land) {
-  const now = performance.now();
   return Object.keys(CHARACTER_NAMES)
-    .filter((data) => characterLands.get(data) === land && isOnScreen(data, now))
+    .filter((data) => characterLands.get(data) === land)
     .map((data) => CHARACTER_NAMES[data]);
 }
 
