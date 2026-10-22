@@ -75,7 +75,9 @@ html, body {
   width: 100vw;
   height: 100vh;
   z-index: 1;
-  background: #000 url('worldmap.jpg') center / cover no-repeat;
+  /* Size and horizontal position are set by script.js (see layoutWorld):
+     the map is wider than the screen and scrolls like a treadmill. */
+  background: #000 url('worldmap.jpg') no-repeat;
 }
 
 /* Fixed-position ArUco markers the camera uses to continuously (re)compute
@@ -123,25 +125,14 @@ html, body {
 }
 
 /* Three static, labeled QR codes, each in the middle of its own square
-   "land" (see .land-zone), spread out across the display. */
+   "land" (see .land-zone). Their horizontal position is set by script.js,
+   since they ride along with the scrolling world. */
 .status-marker {
   position: absolute;
   top: 50%;
   transform: translate(-50%, -50%);
   z-index: 3;
   text-align: center;
-}
-
-.status-marker-1 {
-  left: 12%;
-}
-
-.status-marker-2 {
-  left: 50%;
-}
-
-.status-marker-3 {
-  left: 88%;
 }
 
 .status-marker-qr {
@@ -186,18 +177,6 @@ html, body {
 .land-zone.pointed {
   border-color: #fff;
   background: rgba(245, 226, 186, 0.28);
-}
-
-.land-zone-1 {
-  left: 12%;
-}
-
-.land-zone-2 {
-  left: 50%;
-}
-
-.land-zone-3 {
-  left: 88%;
 }
 
 #characterLands {
