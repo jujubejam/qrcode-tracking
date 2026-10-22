@@ -75,8 +75,8 @@ html, body {
   width: 100vw;
   height: 100vh;
   z-index: 1;
-  /* Size and horizontal position are set by script.js (see layoutWorld):
-     the map is wider than the screen and scrolls like a treadmill. */
+  /* Size and position are set by script.js (see layoutWorld):
+     the map is bigger than the screen and scrolls like a treadmill. */
   background: #000 url('worldmap.jpg') no-repeat;
 }
 
@@ -125,7 +125,7 @@ html, body {
 }
 
 /* Three static, labeled QR codes, each in the middle of its own square
-   "land" (see .land-zone). Their horizontal position is set by script.js,
+   "land" (see .land-zone). Their position is set by script.js,
    since they ride along with the scrolling world. */
 .status-marker {
   position: absolute;

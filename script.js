@@ -319,47 +319,58 @@ function updateCharacterLands() {
 }
 
 // ---------------------------------------------------------------------------
-// Treadmill: the world (map and lands) is wider than the screen. A character
-// standing near the left or right edge of the screen scrolls the world under
-// it, revealing what was hidden past that edge, the way a treadmill moves the
-// ground under someone walking in place. The characters themselves are
-// physical tokens, so they never move on screen; only the world does.
+// Treadmill: the world (map and lands) is bigger than the screen. A character
+// standing near any edge of the screen scrolls the world under it, revealing
+// what was hidden past that edge, the way a treadmill moves the ground under
+// someone walking in place. The characters themselves are physical tokens, so
+// they never move on screen; only the world does.
 // ---------------------------------------------------------------------------
 
 // Lands sit this many screen widths apart, so only one is in full view at a
 // time and the others are hidden off to the sides. The world is exactly wide
-// enough to center each land on screen, and scrolling stops at its ends.
+// enough to center each land on screen; its height follows the map's own
+// proportions. Scrolling stops at the world's edges.
 const LAND_SPACING_SCREENS = 0.75;
-// How far in from each side (as a fraction of the screen width) a character
-// starts pushing the world, and how fast the world moves when a character is
-// right at the edge. Deeper into the edge zone scrolls faster.
+// worldmap.jpg is 2560x1707.
+const MAP_ASPECT = 1707 / 2560;
+// How far in from each edge (as a fraction of the screen's width or height) a
+// character starts pushing the world, and how fast the world moves when a
+// character is right at the edge. Deeper into the edge zone scrolls faster.
 const EDGE_ZONE_FRACTION = 0.2;
 const MAX_SCROLL_PX_PER_SEC = 350;
 
-// The world x shown at the screen's left edge.
-let worldScroll = 0;
+// The world point shown at the screen's top-left corner. Starts vertically
+// centered, with the lands (which sit on the map's middle line) mid-screen.
+const worldScroll = { x: 0, y: 0 };
 let lastTreadmillAt = null;
 
-function worldWidth() {
-  return window.innerWidth * (1 + (LANDS.length - 1) * LAND_SPACING_SCREENS);
+function worldSize() {
+  const width = window.innerWidth * (1 + (LANDS.length - 1) * LAND_SPACING_SCREENS);
+  return { width, height: Math.max(window.innerHeight, width * MAP_ASPECT) };
 }
 
-function maxWorldScroll() {
-  return worldWidth() - window.innerWidth;
+function clampWorldScroll() {
+  const { width, height } = worldSize();
+  worldScroll.x = Math.max(0, Math.min(width - window.innerWidth, worldScroll.x));
+  worldScroll.y = Math.max(0, Math.min(height - window.innerHeight, worldScroll.y));
 }
 
-function landWorldX(index) {
-  return window.innerWidth * (0.5 + index * LAND_SPACING_SCREENS);
+function landWorldPosition(index) {
+  return {
+    x: window.innerWidth * (0.5 + index * LAND_SPACING_SCREENS),
+    y: worldSize().height / 2,
+  };
 }
 
-// -1 (fully in the left edge zone) to 1 (fully in the right one), 0 elsewhere.
-function edgePush(x) {
-  const zone = window.innerWidth * EDGE_ZONE_FRACTION;
-  if (x < zone) {
-    return -Math.min(1, (zone - x) / zone);
+// -1 (fully in the near edge zone) to 1 (fully in the far one), 0 elsewhere,
+// along one axis of a screen `length` long.
+function edgePush(position, length) {
+  const zone = length * EDGE_ZONE_FRACTION;
+  if (position < zone) {
+    return -Math.min(1, (zone - position) / zone);
   }
-  if (x > window.innerWidth - zone) {
-    return Math.min(1, (x - (window.innerWidth - zone)) / zone);
+  if (position > length - zone) {
+    return Math.min(1, (position - (length - zone)) / zone);
   }
   return 0;
 }
@@ -369,12 +380,14 @@ function edgePush(x) {
 // landContaining and pointing need no changes.
 function layoutWorld() {
   LANDS.forEach((land, index) => {
-    const left = `${landWorldX(index) - worldScroll}px`;
-    land.element.style.left = left;
-    land.marker.style.left = left;
+    const { x, y } = landWorldPosition(index);
+    for (const element of [land.element, land.marker]) {
+      element.style.left = `${x - worldScroll.x}px`;
+      element.style.top = `${y - worldScroll.y}px`;
+    }
   });
-  stage.style.backgroundSize = `${worldWidth()}px auto`;
-  stage.style.backgroundPosition = `${-worldScroll}px 50%`;
+  stage.style.backgroundSize = `${worldSize().width}px auto`;
+  stage.style.backgroundPosition = `${-worldScroll.x}px ${-worldScroll.y}px`;
 }
 
 // Characters at opposite edges cancel each other out.
@@ -383,24 +396,26 @@ function updateTreadmill(now) {
   const dt = lastTreadmillAt === null ? 0 : Math.min(0.1, (now - lastTreadmillAt) / 1000);
   lastTreadmillAt = now;
 
-  let push = 0;
+  const push = { x: 0, y: 0 };
   if (homography) {
     for (const data of Object.keys(CHARACTER_NAMES)) {
       const token = trackedTokens.get(data);
       if (token) {
-        push += edgePush(applyHomography(homography, centerOf(token.location)).x);
+        const { x, y } = applyHomography(homography, centerOf(token.location));
+        push.x += edgePush(x, window.innerWidth);
+        push.y += edgePush(y, window.innerHeight);
       }
     }
   }
-  push = Math.max(-1, Math.min(1, push));
 
-  if (push !== 0) {
-    worldScroll += push * MAX_SCROLL_PX_PER_SEC * dt;
-  }
-  worldScroll = Math.max(0, Math.min(maxWorldScroll(), worldScroll));
+  const step = MAX_SCROLL_PX_PER_SEC * dt;
+  worldScroll.x += Math.max(-1, Math.min(1, push.x)) * step;
+  worldScroll.y += Math.max(-1, Math.min(1, push.y)) * step;
+  clampWorldScroll();
   layoutWorld();
 }
 
+worldScroll.y = (worldSize().height - window.innerHeight) / 2;
 layoutWorld();
 
 function videoConstraints(deviceId) {
@@ -457,7 +472,7 @@ function resizeStage() {
 
 window.addEventListener('resize', () => {
   resizeStage();
-  worldScroll = Math.min(maxWorldScroll(), worldScroll);
+  clampWorldScroll();
   layoutWorld();
 });
 resizeStage();
