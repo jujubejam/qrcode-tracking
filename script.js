@@ -252,9 +252,9 @@ for (const marker of STATUS_MARKERS) {
 // view altogether. Announcements and "who is in this land?" are both driven
 // by it, so a character that's left a land is never reported as still in it.
 const LANDS = [
-  { element: document.getElementById('landZone1'), name: 'doing great' },
-  { element: document.getElementById('landZone2'), name: 'alright' },
-  { element: document.getElementById('landZone3'), name: 'SOS' },
+  { element: document.getElementById('landZone1'), marker: document.querySelector('.status-marker-1'), name: 'doing great' },
+  { element: document.getElementById('landZone2'), marker: document.querySelector('.status-marker-2'), name: 'alright' },
+  { element: document.getElementById('landZone3'), marker: document.querySelector('.status-marker-3'), name: 'SOS' },
 ];
 
 const characterLands = new Map();
@@ -318,6 +318,106 @@ function updateCharacterLands() {
     .join('  |  ');
 }
 
+// ---------------------------------------------------------------------------
+// Treadmill: the world (map and lands) is bigger than the screen. A character
+// standing near any edge of the screen scrolls the world under it, revealing
+// what was hidden past that edge, the way a treadmill moves the ground under
+// someone walking in place. The characters themselves are physical tokens, so
+// they never move on screen; only the world does.
+// ---------------------------------------------------------------------------
+
+// Lands sit this many screen widths apart, so only one is in full view at a
+// time and the others are hidden off to the sides. The world is exactly wide
+// enough to center each land on screen; its height follows the map's own
+// proportions. Scrolling stops at the world's edges.
+const LAND_SPACING_SCREENS = 0.75;
+// worldmap.jpg is 2560x1707.
+const MAP_ASPECT = 1707 / 2560;
+// How far in from each edge (as a fraction of the screen's width or height) a
+// character starts pushing the world, and how fast the world moves when a
+// character is right at the edge. Deeper into the edge zone scrolls faster.
+const EDGE_ZONE_FRACTION = 0.2;
+const MAX_SCROLL_PX_PER_SEC = 350;
+
+// The world point shown at the screen's top-left corner. Starts vertically
+// centered, with the lands (which sit on the map's middle line) mid-screen.
+const worldScroll = { x: 0, y: 0 };
+let lastTreadmillAt = null;
+
+function worldSize() {
+  const width = window.innerWidth * (1 + (LANDS.length - 1) * LAND_SPACING_SCREENS);
+  return { width, height: Math.max(window.innerHeight, width * MAP_ASPECT) };
+}
+
+function clampWorldScroll() {
+  const { width, height } = worldSize();
+  worldScroll.x = Math.max(0, Math.min(width - window.innerWidth, worldScroll.x));
+  worldScroll.y = Math.max(0, Math.min(height - window.innerHeight, worldScroll.y));
+}
+
+function landWorldPosition(index) {
+  return {
+    x: window.innerWidth * (0.5 + index * LAND_SPACING_SCREENS),
+    y: worldSize().height / 2,
+  };
+}
+
+// -1 (fully in the near edge zone) to 1 (fully in the far one), 0 elsewhere,
+// along one axis of a screen `length` long.
+function edgePush(position, length) {
+  const zone = length * EDGE_ZONE_FRACTION;
+  if (position < zone) {
+    return -Math.min(1, (zone - position) / zone);
+  }
+  if (position > length - zone) {
+    return Math.min(1, (position - (length - zone)) / zone);
+  }
+  return 0;
+}
+
+// Moving the land boxes themselves (rather than only redrawing them) keeps
+// each one's rendered box the single source of truth for its hit-test, so
+// landContaining and pointing need no changes.
+function layoutWorld() {
+  LANDS.forEach((land, index) => {
+    const { x, y } = landWorldPosition(index);
+    for (const element of [land.element, land.marker]) {
+      element.style.left = `${x - worldScroll.x}px`;
+      element.style.top = `${y - worldScroll.y}px`;
+    }
+  });
+  stage.style.backgroundSize = `${worldSize().width}px auto`;
+  stage.style.backgroundPosition = `${-worldScroll.x}px ${-worldScroll.y}px`;
+}
+
+// Characters at opposite edges cancel each other out.
+function updateTreadmill(now) {
+  // Capped so a stalled frame (e.g. the tab was hidden) can't jump the world.
+  const dt = lastTreadmillAt === null ? 0 : Math.min(0.1, (now - lastTreadmillAt) / 1000);
+  lastTreadmillAt = now;
+
+  const push = { x: 0, y: 0 };
+  if (homography) {
+    for (const data of Object.keys(CHARACTER_NAMES)) {
+      const token = trackedTokens.get(data);
+      if (token) {
+        const { x, y } = applyHomography(homography, centerOf(token.location));
+        push.x += edgePush(x, window.innerWidth);
+        push.y += edgePush(y, window.innerHeight);
+      }
+    }
+  }
+
+  const step = MAX_SCROLL_PX_PER_SEC * dt;
+  worldScroll.x += Math.max(-1, Math.min(1, push.x)) * step;
+  worldScroll.y += Math.max(-1, Math.min(1, push.y)) * step;
+  clampWorldScroll();
+  layoutWorld();
+}
+
+worldScroll.y = (worldSize().height - window.innerHeight) / 2;
+layoutWorld();
+
 function videoConstraints(deviceId) {
   return {
     video: {
@@ -370,7 +470,11 @@ function resizeStage() {
   stage.height = window.innerHeight;
 }
 
-window.addEventListener('resize', resizeStage);
+window.addEventListener('resize', () => {
+  resizeStage();
+  clampWorldScroll();
+  layoutWorld();
+});
 resizeStage();
 
 video.addEventListener('loadedmetadata', () => {
@@ -403,6 +507,7 @@ function tick() {
     scanForQRCodes();
     detectPointing();
 
+    updateTreadmill(performance.now());
     renderStage();
   }
 
