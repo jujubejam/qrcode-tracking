@@ -95,7 +95,7 @@ function announceLand(data, land) {
   const name = CHARACTER_NAMES[data];
   if (name) {
     speak(name);
-    speak(`is ${land}`);
+    speak(landNamed(land).singular);
   }
 }
 
@@ -232,7 +232,7 @@ for (const marker of CORNER_MARKERS) {
 const STATUS_MARKERS = [
   { element: document.getElementById('statusQR1'), data: 'doing great' },
   { element: document.getElementById('statusQR2'), data: 'alright' },
-  { element: document.getElementById('statusQR3'), data: 'SOS' },
+  { element: document.getElementById('statusQR3'), data: 'need help' },
 ];
 
 for (const marker of STATUS_MARKERS) {
@@ -251,11 +251,17 @@ for (const marker of STATUS_MARKERS) {
 // outside every land (but is still visible to the camera) or taken out of
 // view altogether. Announcements and "who is in this land?" are both driven
 // by it, so a character that's left a land is never reported as still in it.
+// `singular` and `plural` are how each land reads after a name ("JuJu needs
+// help", "JuJu and 雨轩 need help").
 const LANDS = [
-  { element: document.getElementById('landZone1'), marker: document.querySelector('.status-marker-1'), name: 'doing great' },
-  { element: document.getElementById('landZone2'), marker: document.querySelector('.status-marker-2'), name: 'alright' },
-  { element: document.getElementById('landZone3'), marker: document.querySelector('.status-marker-3'), name: 'SOS' },
+  { element: document.getElementById('landZone1'), marker: document.querySelector('.status-marker-1'), name: 'doing great', singular: 'is doing great', plural: 'are doing great' },
+  { element: document.getElementById('landZone2'), marker: document.querySelector('.status-marker-2'), name: 'alright', singular: 'is alright', plural: 'are alright' },
+  { element: document.getElementById('landZone3'), marker: document.querySelector('.status-marker-3'), name: 'need help', singular: 'needs help', plural: 'need help' },
 ];
+
+function landNamed(name) {
+  return LANDS.find((land) => land.name === name);
+}
 
 const characterLands = new Map();
 const characterLandsEl = document.getElementById('characterLands');
@@ -314,7 +320,7 @@ function updateCharacterLands() {
 
   characterLandsEl.textContent = [...characterLands.entries()]
     .filter(([, land]) => land)
-    .map(([data, land]) => `${CHARACTER_NAMES[data]} is ${land}`)
+    .map(([data, land]) => `${CHARACTER_NAMES[data]} ${landNamed(land).singular}`)
     .join('  |  ');
 }
 
@@ -342,7 +348,6 @@ const MAX_SCROLL_PX_PER_SEC = 350;
 // The world point shown at the screen's top-left corner. Starts vertically
 // centered, with the lands (which sit on the map's middle line) mid-screen.
 const worldScroll = { x: 0, y: 0 };
-let lastTreadmillAt = null;
 
 function worldSize() {
   const width = window.innerWidth * (1 + (LANDS.length - 1) * LAND_SPACING_SCREENS);
@@ -390,29 +395,33 @@ function layoutWorld() {
   stage.style.backgroundPosition = `${-worldScroll.x}px ${-worldScroll.y}px`;
 }
 
-// Characters at opposite edges cancel each other out.
-function updateTreadmill(now) {
-  // Capped so a stalled frame (e.g. the tab was hidden) can't jump the world.
-  const dt = lastTreadmillAt === null ? 0 : Math.min(0.1, (now - lastTreadmillAt) / 1000);
-  lastTreadmillAt = now;
+function edgePushAt(point) {
+  return { x: edgePush(point.x, window.innerWidth), y: edgePush(point.y, window.innerHeight) };
+}
 
+// Characters at opposite edges cancel each other out. Returns how far the
+// world actually moved, which is zero at the world's edges even while a
+// character is pushing.
+function updateTreadmill(dt) {
   const push = { x: 0, y: 0 };
   if (homography) {
     for (const data of Object.keys(CHARACTER_NAMES)) {
       const token = trackedTokens.get(data);
       if (token) {
-        const { x, y } = applyHomography(homography, centerOf(token.location));
-        push.x += edgePush(x, window.innerWidth);
-        push.y += edgePush(y, window.innerHeight);
+        const characterPush = edgePushAt(applyHomography(homography, centerOf(token.location)));
+        push.x += characterPush.x;
+        push.y += characterPush.y;
       }
     }
   }
 
+  const before = { ...worldScroll };
   const step = MAX_SCROLL_PX_PER_SEC * dt;
   worldScroll.x += Math.max(-1, Math.min(1, push.x)) * step;
   worldScroll.y += Math.max(-1, Math.min(1, push.y)) * step;
   clampWorldScroll();
   layoutWorld();
+  return { x: worldScroll.x - before.x, y: worldScroll.y - before.y };
 }
 
 worldScroll.y = (worldSize().height - window.innerHeight) / 2;
@@ -495,6 +504,8 @@ video.addEventListener('loadedmetadata', () => {
   }
 });
 
+let lastFrameAt = null;
+
 function tick() {
   if (video.readyState === video.HAVE_ENOUGH_DATA) {
     sampleCtx.drawImage(video, 0, 0, sampleCanvas.width, sampleCanvas.height);
@@ -507,8 +518,17 @@ function tick() {
     scanForQRCodes();
     detectPointing();
 
-    updateTreadmill(performance.now());
-    renderStage();
+    // Capped so a stalled frame (e.g. the tab was hidden) can't jump the
+    // world or the animations.
+    const now = performance.now();
+    const dt = lastFrameAt === null ? 0 : Math.min(0.1, (now - lastFrameAt) / 1000);
+    lastFrameAt = now;
+
+    const scrolled = updateTreadmill(dt);
+    updateCharacters(dt, scrolled);
+    updatePairs(now, dt);
+    document.body.classList.toggle('waiting', !Object.keys(CHARACTER_NAMES).some((data) => trackedTokens.has(data)));
+    renderStage(now);
   }
 
   requestAnimationFrame(tick);
@@ -559,57 +579,247 @@ function averageOf(points) {
   return { x: sum.x / points.length, y: sum.y / points.length };
 }
 
-function renderStage() {
+// ---------------------------------------------------------------------------
+// Position and movement: what each character's place on the monitor, and how
+// it's moving relative to the lands and to the other characters, does.
+//  - Into / out of the monitor: the portal pops open, or shrinks closed.
+//  - At the rim: the world moves like a treadmill and the portal blinks, since
+//    the token itself stands still.
+//  - Toward / away from "need help": a black poisonous aura with pirate flags
+//    gathers while a character approaches, and fades as it walks away.
+//  - Toward / away from each other: a blinking bond builds between two
+//    characters, and turns into bestie mode once they're adjacent.
+// ---------------------------------------------------------------------------
+
+// A portal takes 1 / this many seconds to fully open or close.
+const PORTAL_OPEN_PER_SEC = 3;
+
+// How far past the "need help" box (as a fraction of the box's width) the
+// poison starts to reach a character walking toward it.
+const POISON_REACH = 0.8;
+const POISON_RISE_PER_SEC = 0.8;
+const POISON_FADE_PER_SEC = 0.5;
+
+// Distances between characters are measured in code widths, so they mean the
+// same thing however high the camera is. Adjacent means no other token could
+// fit between them: centers under two code widths apart leaves a gap smaller
+// than one code. Once adjacent, they have to drift a little further apart to
+// stop counting, so jitter at the threshold can't flicker bestie mode.
+const ADJACENT_CODES = 2;
+const ADJACENT_RELEASE_CODES = 2.4;
+// The bond starts building within this many code widths.
+const BOND_RANGE_CODES = 8;
+// Faster than this (in code widths, or pixels for the "need help" box, per
+// second) counts as moving toward or away; slower is detection jitter.
+const TREND_CODES_PER_SEC = 0.6;
+const TREND_PX_PER_SEC = 40;
+const BOND_RISE_PER_SEC = 1.5;
+const BOND_DRAIN_PER_SEC = 0.8;
+// Bestie mode outlasts brief detection dropouts, like OUTSIDE_LAND_AFTER_MS.
+const BESTIE_ENDS_AFTER_MS = 800;
+
+const characterStates = new Map();
+const pairStates = new Map();
+
+function approach(value, target, maxStep) {
+  return value < target ? Math.min(target, value + maxStep) : Math.max(target, value - maxStep);
+}
+
+function clamp01(value) {
+  return Math.max(0, Math.min(1, value));
+}
+
+// "toward" when the distance is shrinking faster than `threshold`, "away"
+// when it is growing that fast, otherwise "still" (jitter).
+function trendOf(rate, threshold) {
+  if (rate < -threshold) {
+    return 'toward';
+  }
+  return rate > threshold ? 'away' : 'still';
+}
+
+// Smooths a jittery distance and its rate of change. `track` holds both
+// between frames.
+function trackDistance(track, raw, dt) {
+  if (track.distance === null) {
+    track.distance = raw;
+    track.rate = 0;
+    return;
+  }
+  const previous = track.distance;
+  track.distance += (raw - previous) * Math.min(1, dt * 8);
+  if (dt > 0) {
+    track.rate += ((track.distance - previous) / dt - track.rate) * Math.min(1, dt * 4);
+  }
+}
+
+// Where a code's portal and name sit on screen, from its corners.
+function characterGeometry(location) {
+  const { topLeftCorner, topRightCorner, bottomLeftCorner, bottomRightCorner } = location;
+  const center = applyHomography(homography, centerOf(location));
+  const topLeft = applyHomography(homography, topLeftCorner);
+  const topRight = applyHomography(homography, topRightCorner);
+  const bottomLeft = applyHomography(homography, bottomLeftCorner);
+  const bottomRight = applyHomography(homography, bottomRightCorner);
+
+  const radius = Math.hypot(topLeft.x - center.x, topLeft.y - center.y) * 1.3 * 2;
+
+  // "Up" in the code's own orientation (from its bottom edge toward its
+  // top edge) rather than screen-space up, so the offset stays centered
+  // over the code even when it's rotated rather than drifting sideways.
+  const codeWidth = Math.hypot(topRight.x - topLeft.x, topRight.y - topLeft.y);
+  const codeHeight = Math.hypot(topLeft.x - bottomLeft.x, topLeft.y - bottomLeft.y);
+  const upX = (topLeft.x - bottomLeft.x) / codeHeight;
+  const upY = (topLeft.y - bottomLeft.y) / codeHeight;
+
+  const offset = codeWidth * 0.5;
+  const portalCenter = {
+    x: (topLeft.x + topRight.x) / 2 + upX * offset,
+    y: (topLeft.y + topRight.y) / 2 + upY * offset,
+  };
+
+  // Below the code's own bottom edge (opposite side from the portal, which
+  // floats above its top edge), so the two don't overlap.
+  const namePosition = {
+    x: (bottomLeft.x + bottomRight.x) / 2 - upX * 24,
+    y: (bottomLeft.y + bottomRight.y) / 2 - upY * 24,
+  };
+
+  return { center, portalCenter, radius, namePosition, codeSize: codeWidth };
+}
+
+function distanceToRect(point, rect) {
+  const dx = Math.max(rect.left - point.x, 0, point.x - rect.right);
+  const dy = Math.max(rect.top - point.y, 0, point.y - rect.bottom);
+  return Math.hypot(dx, dy);
+}
+
+// A character's last geometry is kept after it leaves, so its portal can
+// close where it was.
+function updateCharacters(dt, scrolled) {
+  const needHelpRect = elementRect(landNamed('need help').element);
+
+  for (const data of Object.keys(CHARACTER_NAMES)) {
+    const token = homography ? trackedTokens.get(data) : null;
+    let state = characterStates.get(data);
+    if (!state) {
+      state = { geometry: null, present: false, open: 0, pushing: 0, poison: 0, help: { distance: null, rate: 0 }, helpReach: 0 };
+      characterStates.set(data, state);
+    }
+
+    state.present = !!token;
+    state.open = approach(state.open, state.present ? 1 : 0, PORTAL_OPEN_PER_SEC * dt);
+    if (!state.present) {
+      state.pushing = 0;
+      state.help.distance = null;
+      state.poison = approach(state.poison, 0, POISON_FADE_PER_SEC * dt);
+      continue;
+    }
+    state.geometry = characterGeometry(token.location);
+    const { center } = state.geometry;
+
+    // How hard it pushes the treadmill, counted only along an axis the world
+    // actually moved in that direction.
+    const push = edgePushAt(center);
+    const along = (p, moved) => (moved !== 0 && Math.sign(p) === Math.sign(moved) ? Math.abs(p) : 0);
+    state.pushing = Math.max(along(push.x, scrolled.x), along(push.y, scrolled.y));
+
+    // The treadmill moving the box toward a character counts as walking
+    // toward it, which is what it is in the world.
+    const reach = (needHelpRect.right - needHelpRect.left) * POISON_REACH;
+    const rawDistance = distanceToRect(center, needHelpRect);
+    trackDistance(state.help, rawDistance, dt);
+    state.helpReach = clamp01(1 - state.help.distance / reach);
+
+    let target = state.poison;
+    if (rawDistance === 0) {
+      target = 1;
+    } else {
+      const trend = trendOf(state.help.rate, TREND_PX_PER_SEC);
+      if (trend === 'toward') {
+        target = Math.max(state.poison, state.helpReach);
+      } else if (trend === 'away') {
+        target = 0;
+      }
+      // Standing still holds the poison, but never more than its reach, so
+      // it's gone once a character is out of range.
+      target = Math.min(target, state.helpReach);
+    }
+    const rate = target > state.poison ? POISON_RISE_PER_SEC : POISON_FADE_PER_SEC;
+    state.poison = approach(state.poison, target, rate * dt);
+  }
+}
+
+function updatePairs(now, dt) {
+  const keys = Object.keys(CHARACTER_NAMES);
+  for (let i = 0; i < keys.length; i += 1) {
+    for (let j = i + 1; j < keys.length; j += 1) {
+      const [a, b] = [keys[i], keys[j]];
+      const key = `${a}|${b}`;
+      let pair = pairStates.get(key);
+      if (!pair) {
+        pair = { a, b, distance: null, rate: 0, trend: 'still', charge: 0, bestie: false, lastAdjacentAt: -Infinity, hue: 0 };
+        pairStates.set(key, pair);
+      }
+
+      const stateA = characterStates.get(a);
+      const stateB = characterStates.get(b);
+      const together = stateA.present && stateB.present;
+      let adjacent = false;
+      let closeness = 0;
+
+      if (together) {
+        const { center: ca, codeSize: sa } = stateA.geometry;
+        const { center: cb, codeSize: sb } = stateB.geometry;
+        trackDistance(pair, Math.hypot(ca.x - cb.x, ca.y - cb.y) / ((sa + sb) / 2), dt);
+        pair.trend = trendOf(pair.rate, TREND_CODES_PER_SEC);
+        adjacent = pair.distance < (pair.bestie ? ADJACENT_RELEASE_CODES : ADJACENT_CODES);
+        closeness = clamp01(1 - (pair.distance - ADJACENT_CODES) / (BOND_RANGE_CODES - ADJACENT_CODES));
+      } else {
+        pair.distance = null;
+        pair.trend = 'still';
+      }
+
+      if (adjacent) {
+        pair.charge = 1;
+        pair.lastAdjacentAt = now;
+        if (!pair.bestie) {
+          pair.bestie = true;
+          speakParts([CHARACTER_NAMES[a], 'and', CHARACTER_NAMES[b], 'are besties']);
+        }
+      } else {
+        if (pair.trend === 'toward') {
+          pair.charge = approach(pair.charge, Math.max(pair.charge, closeness), BOND_RISE_PER_SEC * dt);
+        } else if (pair.trend === 'away' || !together) {
+          pair.charge = approach(pair.charge, 0, BOND_DRAIN_PER_SEC * dt);
+        }
+        if (pair.bestie && now - pair.lastAdjacentAt > BESTIE_ENDS_AFTER_MS) {
+          pair.bestie = false;
+        }
+      }
+
+      // The glow's colors drift faster as the bond nears bestie mode. Kept
+      // as a running hue, so changing speed (or turning bestie) never jumps.
+      pair.hue = (pair.hue + dt * (40 + 80 * (pair.bestie ? 1 : pair.charge))) % 360;
+    }
+  }
+}
+
+function renderStage(now) {
   stageCtx.clearRect(0, 0, stage.width, stage.height);
 
   if (!homography) {
     return;
   }
 
-  for (const { data, location } of trackedTokens.values()) {
-    const portalImage = PORTAL_IMAGES_BY_DATA[data];
-    if (!portalImage) {
-      continue;
-    }
+  const t = now / 1000;
+  for (const pair of pairStates.values()) {
+    drawBond(pair, t);
+  }
 
-    const { topLeftCorner, topRightCorner, bottomLeftCorner, bottomRightCorner } = location;
-    const center = applyHomography(homography, centerOf(location));
-    const topLeft = applyHomography(homography, topLeftCorner);
-    const topRight = applyHomography(homography, topRightCorner);
-    const bottomLeft = applyHomography(homography, bottomLeftCorner);
-    const bottomRight = applyHomography(homography, bottomRightCorner);
-
-    const radius = Math.hypot(topLeft.x - center.x, topLeft.y - center.y) * 1.3 * 2;
-
-    // "Up" in the code's own orientation (from its bottom edge toward its
-    // top edge) rather than screen-space up, so the offset stays centered
-    // over the code even when it's rotated rather than drifting sideways.
-    const codeWidth = Math.hypot(topRight.x - topLeft.x, topRight.y - topLeft.y);
-    const codeHeight = Math.hypot(topLeft.x - bottomLeft.x, topLeft.y - bottomLeft.y);
-    const upX = (topLeft.x - bottomLeft.x) / codeHeight;
-    const upY = (topLeft.y - bottomLeft.y) / codeHeight;
-
-    const topEdgeMidX = (topLeft.x + topRight.x) / 2;
-    const topEdgeMidY = (topLeft.y + topRight.y) / 2;
-    const offset = codeWidth * 0.5;
-    const portalCenter = {
-      x: topEdgeMidX + upX * offset,
-      y: topEdgeMidY + upY * offset,
-    };
-
-    drawPortal(portalImage, portalCenter, radius);
-
-    const name = CHARACTER_NAMES[data];
-    if (name) {
-      // Below the code's own bottom edge (opposite side from the portal,
-      // which floats above its top edge), so the two don't overlap.
-      const bottomEdgeMidX = (bottomLeft.x + bottomRight.x) / 2;
-      const bottomEdgeMidY = (bottomLeft.y + bottomRight.y) / 2;
-      const namePosition = {
-        x: bottomEdgeMidX - upX * 24,
-        y: bottomEdgeMidY - upY * 24,
-      };
-      drawCharacterName(name, namePosition);
+  for (const [data, state] of characterStates) {
+    if (state.geometry && state.open > 0) {
+      drawCharacter(data, state, t);
     }
   }
 
@@ -618,8 +828,42 @@ function renderStage() {
   }
 }
 
-function drawCharacterName(name, position) {
+function easeOutBack(x) {
+  const c1 = 1.70158;
+  return 1 + (c1 + 1) * (x - 1) ** 3 + c1 * (x - 1) ** 2;
+}
+
+function drawCharacter(data, state, t) {
+  const { portalCenter, radius, namePosition } = state.geometry;
+  const poison = state.poison * state.open;
+
+  if (poison > 0.01) {
+    drawPoisonAura(portalCenter, radius, poison, t);
+  }
+
+  // Pushing the treadmill blinks the portal, faster the deeper into the rim.
+  let alpha = state.open;
+  if (state.pushing > 0) {
+    alpha *= 1 - 0.45 * state.pushing * (0.5 + 0.5 * Math.sin(t * (8 + 8 * state.pushing)));
+  }
+  const portalImage = PORTAL_IMAGES_BY_DATA[data];
+  if (portalImage) {
+    drawPortal(portalImage, portalCenter, radius * Math.max(0, easeOutBack(state.open)), alpha);
+  }
+  if (state.open < 1) {
+    drawPortalRing(portalCenter, radius, state.open);
+  }
+
+  if (poison > 0.01) {
+    drawPirateFlags(portalCenter, radius, poison, t);
+  }
+
+  drawCharacterName(CHARACTER_NAMES[data], namePosition, state.open);
+}
+
+function drawCharacterName(name, position, alpha) {
   stageCtx.save();
+  stageCtx.globalAlpha = alpha;
   stageCtx.font = 'bold 22px monospace';
   stageCtx.textAlign = 'center';
   stageCtx.textBaseline = 'middle';
@@ -633,13 +877,233 @@ function drawCharacterName(name, position) {
 
 // Sized bigger than the code itself so it shows through around its edges,
 // rather than a hard-edged shape.
-function drawPortal(image, center, radius) {
+function drawPortal(image, center, radius, alpha) {
   if (!image.complete) {
     return;
   }
 
+  stageCtx.save();
+  stageCtx.globalAlpha = alpha;
   const size = radius * 2;
   stageCtx.drawImage(image, center.x - radius, center.y - radius, size, size);
+  stageCtx.restore();
+}
+
+// A ring that spreads out as a portal opens and closes in as it shuts,
+// brightest halfway.
+function drawPortalRing(center, radius, open) {
+  stageCtx.save();
+  stageCtx.globalAlpha = Math.sin(open * Math.PI) * 0.9;
+  stageCtx.strokeStyle = '#F5E2BA';
+  stageCtx.lineWidth = 3;
+  stageCtx.beginPath();
+  stageCtx.arc(center.x, center.y, radius * (0.5 + open * 0.7), 0, Math.PI * 2);
+  stageCtx.stroke();
+  stageCtx.restore();
+}
+
+function drawPoisonAura(center, radius, level, t) {
+  const r = radius * (1.1 + 0.6 * level) * (1 + 0.06 * Math.sin(t * 3));
+  const gradient = stageCtx.createRadialGradient(center.x, center.y, r * 0.2, center.x, center.y, r);
+  gradient.addColorStop(0, `rgba(5, 0, 10, ${0.9 * level})`);
+  gradient.addColorStop(0.55, `rgba(30, 0, 40, ${0.65 * level})`);
+  gradient.addColorStop(0.8, `rgba(40, 90, 20, ${0.3 * level})`);
+  gradient.addColorStop(1, 'rgba(40, 90, 20, 0)');
+
+  stageCtx.save();
+  stageCtx.fillStyle = gradient;
+  stageCtx.beginPath();
+  stageCtx.arc(center.x, center.y, r, 0, Math.PI * 2);
+  stageCtx.fill();
+  stageCtx.restore();
+}
+
+// More flags, bigger, the stronger the poison.
+function drawPirateFlags(center, radius, level, t) {
+  const count = Math.max(1, Math.round(level * 6));
+  const orbit = radius * (1 + 0.4 * level);
+
+  stageCtx.save();
+  stageCtx.globalAlpha = Math.min(1, level * 1.5);
+  stageCtx.font = `${Math.round(22 + 10 * level)}px sans-serif`;
+  stageCtx.textAlign = 'center';
+  stageCtx.textBaseline = 'middle';
+  for (let i = 0; i < count; i += 1) {
+    const angle = t * 0.8 + (i * Math.PI * 2) / count;
+    const x = center.x + Math.cos(angle) * orbit;
+    const y = center.y + Math.sin(angle) * orbit * 0.9 + Math.sin(t * 3 + i) * 4;
+    stageCtx.fillText('🏴‍☠️', x, y);
+  }
+  stageCtx.restore();
+}
+
+// The bond between two characters: a holographic bestie aura around both, a
+// shimmering rainbow glow while they come together, or the same glow losing
+// its color and fading as they part.
+function drawBond(pair, t) {
+  const stateA = characterStates.get(pair.a);
+  const stateB = characterStates.get(pair.b);
+  if (!stateA.present || !stateB.present) {
+    return;
+  }
+  const a = stateA.geometry.portalCenter;
+  const b = stateB.geometry.portalCenter;
+  const radius = (stateA.geometry.radius + stateB.geometry.radius) / 2;
+
+  if (pair.bestie) {
+    drawBestieAura(a, b, radius, pair.hue, t);
+    return;
+  }
+  if (pair.charge < 0.02) {
+    return;
+  }
+
+  // Breathes faster as the bond nears bestie mode. Parting drains the color
+  // out.
+  const parting = pair.trend === 'away';
+  const breathe = 0.65 + 0.35 * Math.sin(t * (1.5 + 4 * pair.charge));
+  const strength = pair.charge * breathe;
+  const saturation = parting ? 10 : 90;
+  const { hue } = pair;
+
+  stageCtx.save();
+  // Additive, so overlapping glows brighten like light rather than paint.
+  stageCtx.globalCompositeOperation = 'lighter';
+  drawGlowBridge(a, b, radius, strength, hue, saturation);
+  drawHalo(a, radius, strength, hue, saturation, t);
+  drawHalo(b, radius, strength, hue + 120, saturation, t);
+  stageCtx.restore();
+}
+
+// A soft band of light from one portal to the other, its hue running across
+// the spectrum. Several widths stacked thin and faint give it soft edges.
+function drawGlowBridge(a, b, radius, strength, hue, saturation) {
+  const gradient = stageCtx.createLinearGradient(a.x, a.y, b.x, b.y);
+  for (let i = 0; i <= 4; i += 1) {
+    gradient.addColorStop(i / 4, `hsl(${(hue + i * 60) % 360}, ${saturation}%, 70%)`);
+  }
+
+  stageCtx.save();
+  stageCtx.strokeStyle = gradient;
+  stageCtx.lineCap = 'round';
+  for (const [width, alpha] of [[0.9, 0.06], [0.55, 0.1], [0.25, 0.16], [0.08, 0.3]]) {
+    stageCtx.globalAlpha = alpha * strength;
+    stageCtx.lineWidth = radius * width;
+    stageCtx.beginPath();
+    stageCtx.moveTo(a.x, a.y);
+    stageCtx.lineTo(b.x, b.y);
+    stageCtx.stroke();
+  }
+  stageCtx.restore();
+}
+
+// A hologram-like halo around a portal: a soft colored glow, and a thin
+// rainbow rim that slowly turns.
+function drawHalo(center, radius, strength, hue, saturation, t) {
+  const outer = radius * 1.45;
+  const glow = stageCtx.createRadialGradient(center.x, center.y, radius * 0.75, center.x, center.y, outer);
+  glow.addColorStop(0, `hsla(${hue % 360}, ${saturation}%, 70%, 0)`);
+  glow.addColorStop(0.35, `hsla(${hue % 360}, ${saturation}%, 70%, ${0.45 * strength})`);
+  glow.addColorStop(1, `hsla(${(hue + 60) % 360}, ${saturation}%, 70%, 0)`);
+  stageCtx.fillStyle = glow;
+  stageCtx.beginPath();
+  stageCtx.arc(center.x, center.y, outer, 0, Math.PI * 2);
+  stageCtx.fill();
+
+  const rim = rainbowGradient(center.x, center.y, radius, hue, saturation, t);
+  stageCtx.save();
+  stageCtx.strokeStyle = rim;
+  stageCtx.globalAlpha = 0.55 * strength;
+  stageCtx.lineWidth = radius * 0.06;
+  stageCtx.beginPath();
+  stageCtx.arc(center.x, center.y, radius * 1.02, 0, Math.PI * 2);
+  stageCtx.stroke();
+  stageCtx.restore();
+}
+
+// The spectrum turning around (x, y), starting at `hue`. Conic gradients
+// are missing from older Safari, which gets a straight sweep across instead.
+function rainbowGradient(x, y, size, hue, saturation, t) {
+  const gradient = stageCtx.createConicGradient
+    ? stageCtx.createConicGradient(t * 0.8, x, y)
+    : stageCtx.createLinearGradient(x - size, y, x + size, y);
+  for (let i = 0; i <= 6; i += 1) {
+    gradient.addColorStop(i / 6, `hsl(${(hue + i * 60) % 360}, ${saturation}%, 72%)`);
+  }
+  return gradient;
+}
+
+// The ellipse around two portals that the bestie aura fills.
+function auraShape(a, b, radius) {
+  return {
+    x: (a.x + b.x) / 2,
+    y: (a.y + b.y) / 2,
+    rx: Math.hypot(b.x - a.x, b.y - a.y) / 2 + radius * 0.95,
+    ry: radius * 1.05,
+    angle: Math.atan2(b.y - a.y, b.x - a.x),
+  };
+}
+
+// The approach glow at full strength, picking up exactly where it left off,
+// inside a soft rainbow ring around both portals with twinkles circling it.
+function drawBestieAura(a, b, radius, hue, t) {
+  const { x, y, rx, ry, angle } = auraShape(a, b, radius);
+  const breathe = 0.85 + 0.15 * Math.sin(t * 5.5);
+
+  stageCtx.save();
+  stageCtx.globalCompositeOperation = 'lighter';
+  drawGlowBridge(a, b, radius, breathe, hue, 90);
+  drawHalo(a, radius, breathe, hue, 90, t);
+  drawHalo(b, radius, breathe, hue + 120, 90, t);
+
+  stageCtx.strokeStyle = rainbowGradient(x, y, rx, hue, 90, t);
+  for (const [width, alpha] of [[0.5, 0.08], [0.28, 0.14], [0.12, 0.25], [0.035, 0.7]]) {
+    stageCtx.globalAlpha = alpha * breathe;
+    stageCtx.lineWidth = radius * width;
+    stageCtx.beginPath();
+    stageCtx.ellipse(x, y, rx, ry, angle, 0, Math.PI * 2);
+    stageCtx.stroke();
+  }
+
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
+  for (let i = 0; i < 16; i += 1) {
+    const around = (i * Math.PI * 2) / 16 + t * 0.6;
+    const twinkle = 0.5 + 0.5 * Math.sin(t * 6 + i * 1.7);
+    const px = Math.cos(around) * rx;
+    const py = Math.sin(around) * ry;
+    stageCtx.globalAlpha = 0.4 + 0.6 * twinkle;
+    stageCtx.fillStyle = `hsl(${(hue + i * 22.5) % 360}, 90%, 82%)`;
+    drawSparkle(x + px * cos - py * sin, y + px * sin + py * cos, 5 + 5 * twinkle);
+  }
+  stageCtx.restore();
+
+  const labelY = y - radius * 1.25;
+  stageCtx.save();
+  stageCtx.font = 'bold 22px monospace';
+  stageCtx.textAlign = 'center';
+  stageCtx.textBaseline = 'middle';
+  stageCtx.lineWidth = 5;
+  stageCtx.strokeStyle = '#000';
+  const labelGradient = stageCtx.createLinearGradient(x - 50, labelY, x + 50, labelY);
+  for (let i = 0; i <= 4; i += 1) {
+    labelGradient.addColorStop(i / 4, `hsl(${(hue + i * 60) % 360}, 90%, 75%)`);
+  }
+  stageCtx.fillStyle = labelGradient;
+  stageCtx.strokeText('besties', x, labelY);
+  stageCtx.fillText('besties', x, labelY);
+  stageCtx.restore();
+}
+
+// A four-pointed twinkle.
+function drawSparkle(x, y, size) {
+  stageCtx.beginPath();
+  stageCtx.moveTo(x, y - size);
+  stageCtx.quadraticCurveTo(x, y, x + size, y);
+  stageCtx.quadraticCurveTo(x, y, x, y + size);
+  stageCtx.quadraticCurveTo(x, y, x - size, y);
+  stageCtx.quadraticCurveTo(x, y, x, y - size);
+  stageCtx.fill();
 }
 
 // Solves for a homography (a 3x3 projective transform, with h33 fixed to 1)
@@ -725,7 +1189,7 @@ async function scanForQRCodes() {
 
     latestDetections = results.map(scaleUpToFullRes);
     recordScanResult(latestDetections.length > 0);
-    updateTrackedTokens(latestDetections);
+    updateTrackedTokens(latestDetections.filter((detection) => isOnMonitor(detection.location)));
     updateCharacterLands();
   } catch (error) {
     console.error('QR decode failed:', error);
@@ -762,9 +1226,30 @@ function centerOf(location) {
   };
 }
 
+// The camera sees the whole table, not just the monitor. A code counts as on
+// the monitor while any part of it is within the outer edges of the corner
+// markers. One entirely past them is dropped before tracking, as if it
+// weren't there: no portal, no name, no land, no treadmill.
+function monitorBounds() {
+  const topLeft = CORNER_MARKERS[0].element.getBoundingClientRect();
+  const bottomRight = CORNER_MARKERS[2].element.getBoundingClientRect();
+  return { left: topLeft.left, top: topLeft.top, right: bottomRight.right, bottom: bottomRight.bottom };
+}
+
+function isOnMonitor(location) {
+  if (!homography) {
+    return false;
+  }
+  const bounds = monitorBounds();
+  return Object.values(location).some((corner) => {
+    const { x, y } = applyHomography(homography, corner);
+    return x >= bounds.left && x <= bounds.right && y >= bounds.top && y <= bounds.bottom;
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Hand pointing: pointing at a land with an index finger announces who is in
-// it, e.g. "JuJu is doing great", "no one is doing great", "JuJu and 雨轩 are
+// it, e.g. "JuJu is doing great", "no one needs help", "JuJu and 雨轩 are
 // doing great".
 // ---------------------------------------------------------------------------
 
@@ -835,8 +1320,9 @@ function namesInLand(land) {
 // as text and spoken with each part in the right voice (see speakParts).
 function whoIsInParts(land) {
   const names = namesInLand(land);
+  const { singular, plural } = landNamed(land);
   if (names.length === 0) {
-    return ['no one', 'is', land];
+    return ['no one', singular];
   }
 
   const parts = [];
@@ -846,7 +1332,7 @@ function whoIsInParts(land) {
     }
     parts.push(name);
   });
-  parts.push(names.length === 1 ? 'is' : 'are', land);
+  parts.push(names.length === 1 ? singular : plural);
   return parts;
 }
 
