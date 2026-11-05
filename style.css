@@ -215,3 +215,46 @@ html, body {
   font: 14px monospace;
   color: #ffb3d9;
 }
+
+/* Waiting mode: no player has a token on the monitor. The world dims and a
+   message pulses; the corner markers stay untouched so calibration keeps
+   working. */
+#stage,
+.land-zone,
+.status-marker {
+  transition: filter 0.6s, opacity 0.6s;
+}
+
+body.waiting #stage {
+  filter: grayscale(0.8) brightness(0.4);
+}
+
+body.waiting .land-zone,
+body.waiting .status-marker {
+  opacity: 0.35;
+}
+
+#waitingMessage {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 3;
+  margin: 0;
+  font: bold 28px monospace;
+  color: #F5E2BA;
+  text-shadow: 0 0 8px #000, 0 0 8px #000;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.6s;
+}
+
+body.waiting #waitingMessage {
+  animation: waiting-pulse 2.4s ease-in-out infinite;
+}
+
+@keyframes waiting-pulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
+}
