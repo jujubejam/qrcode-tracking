@@ -934,8 +934,8 @@ function drawPirateFlags(center, radius, level, t) {
 }
 
 // The bond between two characters: a sparkling bestie aura around both, a
-// blinking gold bond (and a dashed preview of the aura) while they come
-// together, or a grey bond fading as they part.
+// shimmering rainbow glow while they come together, or the same glow losing
+// its color and fading as they part.
 function drawBond(pair, t) {
   const stateA = characterStates.get(pair.a);
   const stateB = characterStates.get(pair.b);
@@ -954,24 +954,72 @@ function drawBond(pair, t) {
     return;
   }
 
+  // Breathes faster, and the colors drift faster, as the bond nears bestie
+  // mode. Parting drains the color out.
+  const parting = pair.trend === 'away';
+  const breathe = 0.65 + 0.35 * Math.sin(t * (1.5 + 4 * pair.charge));
+  const strength = pair.charge * breathe;
+  const saturation = parting ? 10 : 90;
+  const hue = (t * (40 + 80 * pair.charge)) % 360;
+
   stageCtx.save();
-  stageCtx.lineWidth = 4;
-  stageCtx.lineCap = 'round';
-  if (pair.trend === 'away') {
-    stageCtx.globalAlpha = pair.charge * 0.7;
-    stageCtx.strokeStyle = '#b8b8c4';
-    stageCtx.setLineDash([4, 14]);
-  } else {
-    // Blinks faster as the bond nears bestie mode.
-    const blink = 0.5 + 0.5 * Math.sin(t * (5 + 10 * pair.charge));
-    stageCtx.globalAlpha = pair.charge * (0.4 + 0.6 * blink);
-    stageCtx.strokeStyle = '#ffd76a';
-    stageCtx.setLineDash([2, 10]);
-    drawAuraOutline(a, b, radius);
+  // Additive, so overlapping glows brighten like light rather than paint.
+  stageCtx.globalCompositeOperation = 'lighter';
+  drawGlowBridge(a, b, radius, strength, hue, saturation);
+  drawHalo(a, radius, strength, hue, saturation, t);
+  drawHalo(b, radius, strength, hue + 120, saturation, t);
+  stageCtx.restore();
+}
+
+// A soft band of light from one portal to the other, its hue running across
+// the spectrum. Several widths stacked thin and faint give it soft edges.
+function drawGlowBridge(a, b, radius, strength, hue, saturation) {
+  const gradient = stageCtx.createLinearGradient(a.x, a.y, b.x, b.y);
+  for (let i = 0; i <= 4; i += 1) {
+    gradient.addColorStop(i / 4, `hsl(${(hue + i * 60) % 360}, ${saturation}%, 70%)`);
   }
+
+  stageCtx.save();
+  stageCtx.strokeStyle = gradient;
+  stageCtx.lineCap = 'round';
+  for (const [width, alpha] of [[0.9, 0.06], [0.55, 0.1], [0.25, 0.16], [0.08, 0.3]]) {
+    stageCtx.globalAlpha = alpha * strength;
+    stageCtx.lineWidth = radius * width;
+    stageCtx.beginPath();
+    stageCtx.moveTo(a.x, a.y);
+    stageCtx.lineTo(b.x, b.y);
+    stageCtx.stroke();
+  }
+  stageCtx.restore();
+}
+
+// A hologram-like halo around a portal: a soft colored glow, and a thin
+// rainbow rim that slowly turns.
+function drawHalo(center, radius, strength, hue, saturation, t) {
+  const outer = radius * 1.45;
+  const glow = stageCtx.createRadialGradient(center.x, center.y, radius * 0.75, center.x, center.y, outer);
+  glow.addColorStop(0, `hsla(${hue % 360}, ${saturation}%, 70%, 0)`);
+  glow.addColorStop(0.35, `hsla(${hue % 360}, ${saturation}%, 70%, ${0.45 * strength})`);
+  glow.addColorStop(1, `hsla(${(hue + 60) % 360}, ${saturation}%, 70%, 0)`);
+  stageCtx.fillStyle = glow;
   stageCtx.beginPath();
-  stageCtx.moveTo(a.x, a.y);
-  stageCtx.lineTo(b.x, b.y);
+  stageCtx.arc(center.x, center.y, outer, 0, Math.PI * 2);
+  stageCtx.fill();
+
+  // Conic gradients are missing from older Safari; the glow alone is enough.
+  if (!stageCtx.createConicGradient) {
+    return;
+  }
+  const rim = stageCtx.createConicGradient(t * 0.8, center.x, center.y);
+  for (let i = 0; i <= 6; i += 1) {
+    rim.addColorStop(i / 6, `hsl(${(hue + i * 60) % 360}, ${saturation}%, 72%)`);
+  }
+  stageCtx.save();
+  stageCtx.strokeStyle = rim;
+  stageCtx.globalAlpha = 0.55 * strength;
+  stageCtx.lineWidth = radius * 0.06;
+  stageCtx.beginPath();
+  stageCtx.arc(center.x, center.y, radius * 1.02, 0, Math.PI * 2);
   stageCtx.stroke();
   stageCtx.restore();
 }
@@ -985,13 +1033,6 @@ function auraShape(a, b, radius) {
     ry: radius * 1.05,
     angle: Math.atan2(b.y - a.y, b.x - a.x),
   };
-}
-
-function drawAuraOutline(a, b, radius) {
-  const { x, y, rx, ry, angle } = auraShape(a, b, radius);
-  stageCtx.beginPath();
-  stageCtx.ellipse(x, y, rx, ry, angle, 0, Math.PI * 2);
-  stageCtx.stroke();
 }
 
 function drawBestieAura(a, b, radius, t) {
