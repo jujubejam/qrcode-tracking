@@ -589,15 +589,7 @@ function averageOf(points) {
 //    gathers while a character approaches, and fades as it walks away.
 //  - Toward / away from each other: a blinking bond builds between two
 //    characters, and turns into bestie mode once they're adjacent.
-//  - Healer: a character with the heal skill clears the poison of anyone it
-//    stands adjacent to.
 // ---------------------------------------------------------------------------
-
-// Embedded capabilities, by QR text. A healer stood adjacent to a poisoned
-// character cures it.
-const CHARACTER_SKILLS = {
-  'object-a': 'heal',
-};
 
 // A portal takes 1 / this many seconds to fully open or close.
 const PORTAL_OPEN_PER_SEC = 3;
@@ -607,7 +599,6 @@ const PORTAL_OPEN_PER_SEC = 3;
 const POISON_REACH = 0.8;
 const POISON_RISE_PER_SEC = 0.8;
 const POISON_FADE_PER_SEC = 0.5;
-const HEAL_PER_SEC = 1.5;
 
 // Distances between characters are measured in code widths, so they mean the
 // same thing however high the camera is. Adjacent means no other token could
@@ -712,7 +703,7 @@ function updateCharacters(dt, scrolled) {
     const token = homography ? trackedTokens.get(data) : null;
     let state = characterStates.get(data);
     if (!state) {
-      state = { geometry: null, present: false, open: 0, pushing: 0, poison: 0, help: { distance: null, rate: 0 }, helpReach: 0, healedBy: null };
+      state = { geometry: null, present: false, open: 0, pushing: 0, poison: 0, help: { distance: null, rate: 0 }, helpReach: 0 };
       characterStates.set(data, state);
     }
 
@@ -754,20 +745,12 @@ function updateCharacters(dt, scrolled) {
       // it's gone once a character is out of range.
       target = Math.min(target, state.helpReach);
     }
-    if (state.healedBy) {
-      state.poison = approach(state.poison, 0, HEAL_PER_SEC * dt);
-    } else {
-      const rate = target > state.poison ? POISON_RISE_PER_SEC : POISON_FADE_PER_SEC;
-      state.poison = approach(state.poison, target, rate * dt);
-    }
+    const rate = target > state.poison ? POISON_RISE_PER_SEC : POISON_FADE_PER_SEC;
+    state.poison = approach(state.poison, target, rate * dt);
   }
 }
 
 function updatePairs(now, dt) {
-  for (const state of characterStates.values()) {
-    state.healedBy = null;
-  }
-
   const keys = Object.keys(CHARACTER_NAMES);
   for (let i = 0; i < keys.length; i += 1) {
     for (let j = i + 1; j < keys.length; j += 1) {
@@ -775,7 +758,7 @@ function updatePairs(now, dt) {
       const key = `${a}|${b}`;
       let pair = pairStates.get(key);
       if (!pair) {
-        pair = { a, b, distance: null, rate: 0, trend: 'still', charge: 0, bestie: false, lastAdjacentAt: -Infinity, healAnnounced: false };
+        pair = { a, b, distance: null, rate: 0, trend: 'still', charge: 0, bestie: false, lastAdjacentAt: -Infinity };
         pairStates.set(key, pair);
       }
 
@@ -812,21 +795,6 @@ function updatePairs(now, dt) {
         }
         if (pair.bestie && now - pair.lastAdjacentAt > BESTIE_ENDS_AFTER_MS) {
           pair.bestie = false;
-          pair.healAnnounced = false;
-        }
-      }
-
-      if (adjacent) {
-        for (const [healer, other] of [[a, b], [b, a]]) {
-          if (CHARACTER_SKILLS[healer] !== 'heal') {
-            continue;
-          }
-          const patient = characterStates.get(other);
-          patient.healedBy = healer;
-          if (patient.helpReach > 0 && !pair.healAnnounced) {
-            pair.healAnnounced = true;
-            speakParts([CHARACTER_NAMES[healer], 'is helping', CHARACTER_NAMES[other]]);
-          }
         }
       }
     }
@@ -884,9 +852,6 @@ function drawCharacter(data, state, t) {
 
   if (poison > 0.01) {
     drawPirateFlags(portalCenter, radius, poison, t);
-  }
-  if (state.healedBy && state.helpReach > 0) {
-    drawHealing(portalCenter, radius, t);
   }
 
   drawCharacterName(CHARACTER_NAMES[data], namePosition, state.open);
@@ -964,24 +929,6 @@ function drawPirateFlags(center, radius, level, t) {
     const x = center.x + Math.cos(angle) * orbit;
     const y = center.y + Math.sin(angle) * orbit * 0.9 + Math.sin(t * 3 + i) * 4;
     stageCtx.fillText('🏴‍☠️', x, y);
-  }
-  stageCtx.restore();
-}
-
-// Green plus signs drifting up through the portal.
-function drawHealing(center, radius, t) {
-  stageCtx.save();
-  stageCtx.font = 'bold 28px monospace';
-  stageCtx.textAlign = 'center';
-  stageCtx.textBaseline = 'middle';
-  stageCtx.fillStyle = '#7dffb0';
-  stageCtx.shadowColor = '#000';
-  stageCtx.shadowBlur = 6;
-  for (let i = 0; i < 6; i += 1) {
-    const phase = (t * 0.8 + i / 6) % 1;
-    const angle = i * 2.1;
-    stageCtx.globalAlpha = 1 - phase;
-    stageCtx.fillText('+', center.x + Math.cos(angle) * radius * 0.7, center.y + radius * 0.5 - phase * radius * 1.4);
   }
   stageCtx.restore();
 }
