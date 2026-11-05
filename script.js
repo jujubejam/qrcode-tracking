@@ -758,7 +758,7 @@ function updatePairs(now, dt) {
       const key = `${a}|${b}`;
       let pair = pairStates.get(key);
       if (!pair) {
-        pair = { a, b, distance: null, rate: 0, trend: 'still', charge: 0, bestie: false, lastAdjacentAt: -Infinity };
+        pair = { a, b, distance: null, rate: 0, trend: 'still', charge: 0, bestie: false, lastAdjacentAt: -Infinity, hue: 0 };
         pairStates.set(key, pair);
       }
 
@@ -797,6 +797,10 @@ function updatePairs(now, dt) {
           pair.bestie = false;
         }
       }
+
+      // The glow's colors drift faster as the bond nears bestie mode. Kept
+      // as a running hue, so changing speed (or turning bestie) never jumps.
+      pair.hue = (pair.hue + dt * (40 + 80 * (pair.bestie ? 1 : pair.charge))) % 360;
     }
   }
 }
@@ -933,7 +937,7 @@ function drawPirateFlags(center, radius, level, t) {
   stageCtx.restore();
 }
 
-// The bond between two characters: a sparkling bestie aura around both, a
+// The bond between two characters: a holographic bestie aura around both, a
 // shimmering rainbow glow while they come together, or the same glow losing
 // its color and fading as they part.
 function drawBond(pair, t) {
@@ -947,20 +951,20 @@ function drawBond(pair, t) {
   const radius = (stateA.geometry.radius + stateB.geometry.radius) / 2;
 
   if (pair.bestie) {
-    drawBestieAura(a, b, radius, t);
+    drawBestieAura(a, b, radius, pair.hue, t);
     return;
   }
   if (pair.charge < 0.02) {
     return;
   }
 
-  // Breathes faster, and the colors drift faster, as the bond nears bestie
-  // mode. Parting drains the color out.
+  // Breathes faster as the bond nears bestie mode. Parting drains the color
+  // out.
   const parting = pair.trend === 'away';
   const breathe = 0.65 + 0.35 * Math.sin(t * (1.5 + 4 * pair.charge));
   const strength = pair.charge * breathe;
   const saturation = parting ? 10 : 90;
-  const hue = (t * (40 + 80 * pair.charge)) % 360;
+  const { hue } = pair;
 
   stageCtx.save();
   // Additive, so overlapping glows brighten like light rather than paint.
@@ -1006,14 +1010,7 @@ function drawHalo(center, radius, strength, hue, saturation, t) {
   stageCtx.arc(center.x, center.y, outer, 0, Math.PI * 2);
   stageCtx.fill();
 
-  // Conic gradients are missing from older Safari; the glow alone is enough.
-  if (!stageCtx.createConicGradient) {
-    return;
-  }
-  const rim = stageCtx.createConicGradient(t * 0.8, center.x, center.y);
-  for (let i = 0; i <= 6; i += 1) {
-    rim.addColorStop(i / 6, `hsl(${(hue + i * 60) % 360}, ${saturation}%, 72%)`);
-  }
+  const rim = rainbowGradient(center.x, center.y, radius, hue, saturation, t);
   stageCtx.save();
   stageCtx.strokeStyle = rim;
   stageCtx.globalAlpha = 0.55 * strength;
@@ -1022,6 +1019,18 @@ function drawHalo(center, radius, strength, hue, saturation, t) {
   stageCtx.arc(center.x, center.y, radius * 1.02, 0, Math.PI * 2);
   stageCtx.stroke();
   stageCtx.restore();
+}
+
+// The spectrum turning around (x, y), starting at `hue`. Conic gradients
+// are missing from older Safari, which gets a straight sweep across instead.
+function rainbowGradient(x, y, size, hue, saturation, t) {
+  const gradient = stageCtx.createConicGradient
+    ? stageCtx.createConicGradient(t * 0.8, x, y)
+    : stageCtx.createLinearGradient(x - size, y, x + size, y);
+  for (let i = 0; i <= 6; i += 1) {
+    gradient.addColorStop(i / 6, `hsl(${(hue + i * 60) % 360}, ${saturation}%, 72%)`);
+  }
+  return gradient;
 }
 
 // The ellipse around two portals that the bestie aura fills.
@@ -1035,50 +1044,54 @@ function auraShape(a, b, radius) {
   };
 }
 
-function drawBestieAura(a, b, radius, t) {
+// The approach glow at full strength, picking up exactly where it left off,
+// inside a soft rainbow ring around both portals with twinkles circling it.
+function drawBestieAura(a, b, radius, hue, t) {
   const { x, y, rx, ry, angle } = auraShape(a, b, radius);
+  const breathe = 0.85 + 0.15 * Math.sin(t * 5.5);
 
   stageCtx.save();
-  stageCtx.translate(x, y);
-  stageCtx.rotate(angle);
+  stageCtx.globalCompositeOperation = 'lighter';
+  drawGlowBridge(a, b, radius, breathe, hue, 90);
+  drawHalo(a, radius, breathe, hue, 90, t);
+  drawHalo(b, radius, breathe, hue + 120, 90, t);
 
-  stageCtx.save();
-  stageCtx.scale(1, ry / rx);
-  const glow = stageCtx.createRadialGradient(0, 0, 0, 0, 0, rx);
-  glow.addColorStop(0.55, 'rgba(255, 215, 120, 0)');
-  glow.addColorStop(0.9, 'rgba(255, 190, 230, 0.35)');
-  glow.addColorStop(1, 'rgba(255, 190, 230, 0)');
-  stageCtx.fillStyle = glow;
-  stageCtx.beginPath();
-  stageCtx.arc(0, 0, rx, 0, Math.PI * 2);
-  stageCtx.fill();
-  stageCtx.restore();
+  stageCtx.strokeStyle = rainbowGradient(x, y, rx, hue, 90, t);
+  for (const [width, alpha] of [[0.5, 0.08], [0.28, 0.14], [0.12, 0.25], [0.035, 0.7]]) {
+    stageCtx.globalAlpha = alpha * breathe;
+    stageCtx.lineWidth = radius * width;
+    stageCtx.beginPath();
+    stageCtx.ellipse(x, y, rx, ry, angle, 0, Math.PI * 2);
+    stageCtx.stroke();
+  }
 
-  stageCtx.lineWidth = 4;
-  stageCtx.strokeStyle = 'rgba(255, 225, 140, 0.9)';
-  stageCtx.shadowColor = '#ffd76a';
-  stageCtx.shadowBlur = 18;
-  stageCtx.beginPath();
-  stageCtx.ellipse(0, 0, rx, ry, 0, 0, Math.PI * 2);
-  stageCtx.stroke();
-
-  stageCtx.fillStyle = '#fff6d0';
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
   for (let i = 0; i < 16; i += 1) {
     const around = (i * Math.PI * 2) / 16 + t * 0.6;
-    const size = 5 + 5 * (0.5 + 0.5 * Math.sin(t * 6 + i * 1.7));
-    drawSparkle(Math.cos(around) * rx, Math.sin(around) * ry, size);
+    const twinkle = 0.5 + 0.5 * Math.sin(t * 6 + i * 1.7);
+    const px = Math.cos(around) * rx;
+    const py = Math.sin(around) * ry;
+    stageCtx.globalAlpha = 0.4 + 0.6 * twinkle;
+    stageCtx.fillStyle = `hsl(${(hue + i * 22.5) % 360}, 90%, 82%)`;
+    drawSparkle(x + px * cos - py * sin, y + px * sin + py * cos, 5 + 5 * twinkle);
   }
   stageCtx.restore();
 
+  const labelY = y - radius * 1.25;
   stageCtx.save();
   stageCtx.font = 'bold 22px monospace';
   stageCtx.textAlign = 'center';
   stageCtx.textBaseline = 'middle';
   stageCtx.lineWidth = 5;
   stageCtx.strokeStyle = '#000';
-  stageCtx.fillStyle = '#ffd76a';
-  stageCtx.strokeText('besties', x, y - radius * 1.25);
-  stageCtx.fillText('besties', x, y - radius * 1.25);
+  const labelGradient = stageCtx.createLinearGradient(x - 50, labelY, x + 50, labelY);
+  for (let i = 0; i <= 4; i += 1) {
+    labelGradient.addColorStop(i / 4, `hsl(${(hue + i * 60) % 360}, 90%, 75%)`);
+  }
+  stageCtx.fillStyle = labelGradient;
+  stageCtx.strokeText('besties', x, labelY);
+  stageCtx.fillText('besties', x, labelY);
   stageCtx.restore();
 }
 
